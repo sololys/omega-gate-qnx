@@ -15,8 +15,9 @@ ARCH     ?= x86_64
 QCC      ?= qcc
 QCCFLAGS := -Vgcc_nto$(ARCH) -std=gnu11 -O2 -Wall -Wextra -Werror -Iinclude
 
-CORE_SRCS := src/sha256_zero_dep.c src/omega_gate_core.c
-BUILD_DIR := build
+CORE_SRCS    := src/sha256_zero_dep.c src/omega_gate_core.c
+SLUICE_SRCS  := src/sha256_zero_dep.c src/hashprune_sluice.c
+BUILD_DIR    := build
 
 .PHONY: all verify test demo rtl qnx clean
 
@@ -30,6 +31,8 @@ $(BUILD_DIR):
 test: $(BUILD_DIR)
 	$(CC) $(CFLAGS) -o $(BUILD_DIR)/test_omega_gate $(CORE_SRCS) tests/test_omega_gate.c
 	./$(BUILD_DIR)/test_omega_gate
+	$(CC) $(CFLAGS) -o $(BUILD_DIR)/test_hashprune_sluice $(SLUICE_SRCS) tests/test_hashprune_sluice.c
+	./$(BUILD_DIR)/test_hashprune_sluice
 
 demo: $(BUILD_DIR)
 	$(CC) $(CFLAGS) -o $(BUILD_DIR)/omega_gate_resmgr $(CORE_SRCS) src/omega_gate_resmgr.c
@@ -50,6 +53,12 @@ qnx:
 	$(QCC) $(QCCFLAGS) -o $(BUILD_DIR)/qnx_$(ARCH)/omega_gate_resmgr $(CORE_SRCS) src/omega_gate_resmgr.c
 	$(QCC) $(QCCFLAGS) -o $(BUILD_DIR)/qnx_$(ARCH)/d0_planner $(CORE_SRCS) src/d0_planner.c
 	$(QCC) $(QCCFLAGS) -o $(BUILD_DIR)/qnx_$(ARCH)/trap_mirror_daemon src/trap_mirror_daemon.c
+	$(QCC) $(QCCFLAGS) -o $(BUILD_DIR)/qnx_$(ARCH)/test_hashprune_sluice $(SLUICE_SRCS) tests/test_hashprune_sluice.c
+	$(QCC) $(QCCFLAGS) -o $(BUILD_DIR)/qnx_$(ARCH)/d2_gate_resmgr $(SLUICE_SRCS) src/d2_gate_resmgr.c
+	$(QCC) $(QCCFLAGS) -o $(BUILD_DIR)/qnx_$(ARCH)/d1_guestroom_resmgr $(SLUICE_SRCS) src/d1_guestroom_resmgr.c
+	$(QCC) $(QCCFLAGS) -o $(BUILD_DIR)/qnx_$(ARCH)/d0_trap_resmgr $(SLUICE_SRCS) src/d0_trap_resmgr.c
+	$(QCC) $(QCCFLAGS) -o $(BUILD_DIR)/qnx_$(ARCH)/cascade_mirror_daemon $(SLUICE_SRCS) src/cascade_mirror_daemon.c
+	$(QCC) $(QCCFLAGS) -o $(BUILD_DIR)/qnx_$(ARCH)/cascade_driver $(SLUICE_SRCS) src/cascade_driver.c
 	@echo "[OK] Built QNX 8.0 ($(ARCH)) binaries in $(BUILD_DIR)/qnx_$(ARCH)/"
 
 clean:

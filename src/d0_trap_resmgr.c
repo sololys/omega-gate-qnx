@@ -9,6 +9,7 @@
  */
 
 #include "omega_cascade.h"
+#include "omega_capsule205b.h"
 #include "omega_gate.h"
 
 #include <stdio.h>
@@ -32,6 +33,7 @@
 static int g_d2_fd = -1;
 static int g_d1_fd = -1;
 static int g_mirror_coid = -1;
+static omega_capsule_ctx_t g_cap_ctx;
 
 static void *d0_heartbeat_thread(void *arg) {
     (void)arg;
@@ -45,32 +47,75 @@ static void *d0_heartbeat_thread(void *arg) {
     return NULL;
 }
 
+static bool d0_poincare_breach(const omega_cascade_req_t *r) {
+    int64_t x = (int64_t)r->pos_x_q16;
+    int64_t y = (int64_t)r->pos_y_q16;
+    int64_t z = (int64_t)r->pos_z_q16;
+    int64_t r2 = x * x + y * y + z * z;
+    return r2 >= HP_Q32_ONE; /* ||p||^2 >= 1.0 in Q32.32 (matches FPGA B^3 horizon) */
+}
+
+static void d0_eval_stage(omega_cascade_req_t *r) {
+    r->pad[0] = 0xFFu; /* 0xFF = D0 cleared -> D1 evaluates sluice */
+    r->pad[1] = 0u;
+    if (!r->is_l01_reset) {
+        if (d0_poincare_breach(r)) {
+            r->pad[0] = (uint8_t)OMEGA_CVERD_KILL;
+            r->pad[1] = (uint8_t)OMEGA_CRSN_KILL_POINCARE;
+        } else if (r->anomaly_score >= OMEGA_KILL_ANOMALY_TH || r->anomaly_score < 0) {
+            r->pad[0] = (uint8_t)OMEGA_CVERD_KILL;
+            r->pad[1] = (uint8_t)OMEGA_CRSN_KILL_HOSTILE;
+        } else if (r->anomaly_score >= 50) {
+            if (g_mirror_coid >= 0) {
+                (void)MsgSendPulse(g_mirror_coid, OMEGA_PRIO_TRAP_MIRROR,
+                                   OMEGA_PULSE_TRAP_CODE, (int)r->anomaly_score);
+            }
+            r->pad[0] = (uint8_t)OMEGA_CVERD_TRAP;
+            r->pad[1] = (uint8_t)OMEGA_CRSN_TRAP_MIRROR;
+        } else if (r->airlock_elapsed_ms < OMEGA_MIN_AIRLOCK_MS) {
+            r->pad[0] = (uint8_t)OMEGA_CVERD_HOLD;
+            r->pad[1] = (uint8_t)OMEGA_CRSN_HOLD_AIRLOCK;
+        }
+    }
+}
+
 static int d0_io_devctl(resmgr_context_t *ctp, io_devctl_t *msg, RESMGR_OCB_T *ocb) {
     int sts = iofunc_devctl_default(ctp, msg, ocb);
     if (sts != _RESMGR_DEFAULT) return sts;
+
+    if (msg->i.dcmd == OMEGA_DCMD_CAPSULE205_EVAL) {
+        omega_capsule_io_t *cio = (omega_capsule_io_t *)_DEVCTL_DATA(msg->i);
+        omega_cascade_io_t fwd;
+        memset(&fwd, 0, sizeof(fwd));
+        omega_capsule_status_t cst = omega_capsule205b_ingest(&g_cap_ctx, &cio->ingress, &fwd.req);
+
+        if (cst != OMEGA_CAP_OK) {
+            if (g_mirror_coid >= 0) {
+                (void)MsgSendPulse(g_mirror_coid, OMEGA_PRIO_TRAP_MIRROR,
+                                   OMEGA_PULSE_TRAP_CODE, (int)cst);
+            }
+            fwd.req.pad[0] = (uint8_t)OMEGA_CVERD_KILL;
+            fwd.req.pad[1] = (uint8_t)OMEGA_CRSN_KILL_HOSTILE;
+        } else {
+            d0_eval_stage(&fwd.req);
+        }
+
+        if (devctl(g_d1_fd, OMEGA_DCMD_CASCADE_EVAL, &fwd, sizeof(fwd), NULL) != EOK) {
+            return EIO;
+        }
+
+        cio->rep = fwd.rep;
+        memset(&msg->o, 0, sizeof(msg->o));
+        msg->o.nbytes = sizeof(omega_cascade_rep_t);
+        return _RESMGR_PTR(ctp, &msg->o, sizeof(msg->o) + sizeof(omega_cascade_rep_t));
+    }
+
     if (msg->i.dcmd != OMEGA_DCMD_CASCADE_EVAL) return ENOTTY;
 
     omega_cascade_io_t *io = (omega_cascade_io_t *)_DEVCTL_DATA(msg->i);
     omega_cascade_io_t fwd;
     fwd.req = io->req;
-
-    /* Default pass-through tag to D1 (0xFF means D0 cleared -> D1 evaluates sluice) */
-    fwd.req.reserved = 0xFFu;
-
-    if (!fwd.req.is_l01_reset) {
-        if (fwd.req.anomaly_score >= OMEGA_KILL_ANOMALY_TH || fwd.req.anomaly_score < 0) {
-            fwd.req.reserved = ((uint32_t)OMEGA_CRSN_KILL_HOSTILE << 8) | (uint32_t)OMEGA_CVERD_KILL;
-        } else if (fwd.req.anomaly_score >= 50) {
-            /* TRAP -> async side-channel pulse to isolated mirror daemon at 0.00 V DC */
-            if (g_mirror_coid >= 0) {
-                (void)MsgSendPulse(g_mirror_coid, OMEGA_PRIO_TRAP_MIRROR,
-                                   OMEGA_PULSE_TRAP_CODE, (int)fwd.req.anomaly_score);
-            }
-            fwd.req.reserved = ((uint32_t)OMEGA_CRSN_TRAP_MIRROR << 8) | (uint32_t)OMEGA_CVERD_TRAP;
-        } else if (fwd.req.airlock_elapsed_ms < OMEGA_MIN_AIRLOCK_MS) {
-            fwd.req.reserved = ((uint32_t)OMEGA_CRSN_HOLD_AIRLOCK << 8) | (uint32_t)OMEGA_CVERD_HOLD;
-        }
-    }
+    d0_eval_stage(&fwd.req);
 
     if (devctl(g_d1_fd, OMEGA_DCMD_CASCADE_EVAL, &fwd, sizeof(fwd), NULL) != EOK) {
         return EIO;
@@ -83,6 +128,7 @@ static int d0_io_devctl(resmgr_context_t *ctp, io_devctl_t *msg, RESMGR_OCB_T *o
 }
 
 int main(void) {
+    omega_capsule_ctx_init(&g_cap_ctx);
     struct sched_param sp;
     memset(&sp, 0, sizeof(sp));
     sp.sched_priority = OMEGA_PRIO_D0_TRAP;

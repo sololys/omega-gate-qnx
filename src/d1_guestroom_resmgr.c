@@ -62,18 +62,20 @@ static int d1_io_devctl(resmgr_context_t *ctp, io_devctl_t *msg, RESMGR_OCB_T *o
     omega_cascade_io_t fwd;
     fwd.req = io->req;
 
-    uint8_t d0_v = (uint8_t)(fwd.req.reserved & 0xFFu);
+    uint8_t d0_v = fwd.req.pad[0];
     if (!fwd.req.is_l01_reset && d0_v != OMEGA_CVERD_KILL && d0_v != OMEGA_CVERD_TRAP && d0_v != OMEGA_CVERD_HOLD) {
-        int32_t pos[HP_MAX_DIM] = { fwd.req.pos_x_q16, fwd.req.pos_y_q16, fwd.req.pos_z_q16 };
-        bool inv_ok = (fwd.req.flags & OMEGA_FLAG_INVOLUTION_OK) != 0 &&
+        /* Use dedicated physical obstacle clearance (byte 92..95), keeping byte 16..27 strictly Poincare B^3 */
+        int32_t obs_pos[HP_MAX_DIM] = { (int32_t)fwd.req.obstacle_dist_q16, 0, 0 };
+        bool inv_ok = ((fwd.req.flags & (OMEGA_FLAG_REVERSE_CLOSED | OMEGA_FLAG_INVOLUTION_OK)) != 0) &&
                       (fwd.req.state_s == fwd.req.f_f_state_s);
         bool wit_ok = (fwd.req.flags & OMEGA_FLAG_WITNESS_OK) != 0;
 
-        hp_step_result_t sr = hp_sluice_step(&g_sluice, fwd.req.target_id, pos,
+        hp_step_result_t sr = hp_sluice_step(&g_sluice, fwd.req.target_id, obs_pos,
                                              fwd.req.pi_drift_ppm, inv_ok, wit_ok);
         uint32_t rsn = OMEGA_CRSN_OK;
         uint8_t v = map_sluice_to_verdict(sr, &rsn);
-        fwd.req.reserved = ((rsn & 0xFFFFFFu) << 8) | (uint32_t)v;
+        fwd.req.pad[0] = v;
+        fwd.req.pad[1] = (uint8_t)(rsn & 0xFFu);
     }
 
     if (devctl(g_d2_fd, OMEGA_DCMD_CASCADE_EVAL, &fwd, sizeof(fwd), NULL) != EOK) {

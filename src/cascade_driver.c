@@ -34,9 +34,10 @@ static void make_valid_req(omega_cascade_req_t *r, uint32_t seq_id) {
     r->stage = 4u;
     r->prev_stage = 3u;
     r->flags = OMEGA_FLAG_INTENT_VALID | OMEGA_FLAG_WITNESS_OK | OMEGA_FLAG_INVOLUTION_OK;
-    r->pos_x_q16 = 5 * HP_Q16_ONE;
-    r->pos_y_q16 = 5 * HP_Q16_ONE;
+    r->pos_x_q16 = HP_Q16_ONE / 4; /* 0.25 inside Poincare B^3 (||p||^2 = 0.0625 < 1.0) */
+    r->pos_y_q16 = 0;
     r->pos_z_q16 = 0;
+    r->obstacle_dist_q16 = 5u * (uint32_t)HP_Q16_ONE; /* 5.0 m physical obstacle clearance */
     r->target_id = 10u;
     r->airlock_elapsed_ms = 20u;
     r->u_raw = 1000;
@@ -99,7 +100,7 @@ int main(int argc, char **argv) {
 
         /* Attempt direct OPEN against /dev/d2_gate while watchdog is locked */
         make_valid_req(&io.req, 404u);
-        io.req.reserved = (uint32_t)OMEGA_CVERD_OPEN;
+        io.req.pad[0] = (uint8_t)OMEGA_CVERD_OPEN;
         if (devctl(fd_d2, OMEGA_DCMD_CASCADE_EVAL, &io, sizeof(io), NULL) == EOK) {
             printf("[driver] seq=%-3u (OPEN attempt after kill -9) -> verdict=%-4s | %4u mV | reason=%s | wdg_lock=%u\n",
                    io.rep.seq_id,
@@ -128,7 +129,7 @@ int main(int argc, char **argv) {
 
         /* seq=406: d1_guestroom is STILL dead -> OPEN must remain DENIED (0 mV) */
         make_valid_req(&io.req, 406u);
-        io.req.reserved = (uint32_t)OMEGA_CVERD_OPEN;
+        io.req.pad[0] = (uint8_t)OMEGA_CVERD_OPEN;
         if (devctl(fd_d2, OMEGA_DCMD_CASCADE_EVAL, &io, sizeof(io), NULL) == EOK) {
             printf("[driver] seq=%-3u (OPEN while d1 still dead) -> verdict=%-4s | %4u mV | reason=%s | wdg_lock=%u\n",
                    io.rep.seq_id,

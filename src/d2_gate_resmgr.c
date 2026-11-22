@@ -241,10 +241,10 @@ static int d2_io_devctl(resmgr_context_t *ctp, io_devctl_t *msg, RESMGR_OCB_T *o
         rep.flags_out = OMEGA_OUT_CROWBAR_GND | OMEGA_OUT_SNUBBER_DUMP | OMEGA_OUT_KILL_LATCHED;
         rep.reason_code = OMEGA_CRSN_KILL_LATCHED;
     }
-    /* 4. Evaluate upstream D0/D1 stage verdict carried in req.reserved */
+    /* 4. Evaluate upstream D0/D1 stage verdict carried in req.pad[0..1] */
     else {
-        uint8_t upstream_v = (uint8_t)(req.reserved & 0xFFu);
-        uint32_t upstream_rsn = (req.reserved >> 8) & 0xFFFFFFu;
+        uint8_t upstream_v = req.pad[0];
+        uint32_t upstream_rsn = (uint32_t)req.pad[1];
         bool witness_ok = (req.flags & OMEGA_FLAG_WITNESS_OK) != 0;
 
         if (upstream_v == OMEGA_CVERD_KILL) {

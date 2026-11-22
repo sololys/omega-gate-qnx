@@ -133,7 +133,7 @@ typedef struct __attribute__((packed)) {
     int32_t  proj_state_s;
     int32_t  proj_citizen_c;
     uint32_t earned_merit_delta;
-    uint32_t reserved;
+    uint32_t obstacle_dist_q16;     /* Physical clearance distance to nearest obstacle (Q16.16) */
     uint64_t intent_digest;
     /* L01 physical key + frame CRC (24 B) */
     uint8_t  is_l01_reset;

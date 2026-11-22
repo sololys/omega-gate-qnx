@@ -49,7 +49,8 @@ typedef enum {
     OMEGA_RSN_KILL_HOSTILE    = 9,
     OMEGA_RSN_KILL_LATCHED    = 10,
     OMEGA_RSN_L01_RESET       = 11,
-    OMEGA_RSN_INVALID_KEY     = 12
+    OMEGA_RSN_INVALID_KEY     = 12,
+    OMEGA_RSN_KILL_POINCARE   = 13
 } omega_reason_t;
 
 typedef enum {
@@ -65,6 +66,9 @@ typedef struct {
     uint8_t  prev_stage;
     int32_t  torque_mnm;
     int32_t  jerk_mrad_s3;
+    int32_t  pos_x_q16;          /* Poincare ball B^3 coordinate x in Q16.16 (0x10000 = 1.0) */
+    int32_t  pos_y_q16;          /* Poincare ball B^3 coordinate y in Q16.16 */
+    int32_t  pos_z_q16;          /* Poincare ball B^3 coordinate z in Q16.16 */
     int32_t  anomaly_score;
     uint8_t  witness_ok;
     uint16_t airlock_elapsed_ms;

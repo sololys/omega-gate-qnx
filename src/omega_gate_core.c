@@ -40,8 +40,19 @@ const char *omega_reason_name(omega_reason_t r) {
         case OMEGA_RSN_KILL_LATCHED:    return "KILL_LATCHED_REQUIRES_L01_RESET";
         case OMEGA_RSN_L01_RESET:       return "L01_AUTHORIZED_RESET_TO_HOLD";
         case OMEGA_RSN_INVALID_KEY:     return "INVALID_L01_RESET_KEY";
+        case OMEGA_RSN_KILL_POINCARE:   return "POINCARE_BOUNDARY_BREACH";
         default:                        return "UNKNOWN_REASON";
     }
+}
+
+static bool poincare_horizon_breach(int32_t x_q16, int32_t y_q16, int32_t z_q16) {
+    /* Zero-float Q16.16 -> Q32.32 check: r^2 = x^2 + y^2 + z^2 >= 1.0 (1ULL << 32).
+       Max sum is 3 * (2^31)^2 = 3 * 2^62 < 2^64: overflow-free for all int32_t inputs. */
+    int64_t x = (int64_t)x_q16;
+    int64_t y = (int64_t)y_q16;
+    int64_t z = (int64_t)z_q16;
+    uint64_t r2_q32 = (uint64_t)(x * x) + (uint64_t)(y * y) + (uint64_t)(z * z);
+    return r2_q32 >= (1ULL << 32);
 }
 
 static void ledger_hash_record(const omega_witness_t *w, char out_hex[65]) {
@@ -164,14 +175,15 @@ void omega_gate_eval(omega_gate_t *g, const omega_cmd_t *cmd, omega_reply_t *out
                          (cmd->timestamp_ns > g->last_ts_ns) &&
                          ((cmd->timestamp_ns - g->last_ts_ns) > OMEGA_LIGHTCONE_MAX_NS);
 
-        /* 3. Physical envelopes (Torque <= 80 Nm, Jerk <= 25 rad/s^3) */
+        /* 3. Physical envelopes (Torque <= 80 Nm, Jerk <= 25 rad/s^3) & Poincare ball B^3 */
         bool guillotine = (i32_abs_clamped(cmd->torque_mnm) > OMEGA_MAX_TORQUE_MNM) ||
                           (i32_abs_clamped(cmd->jerk_mrad_s3) > OMEGA_MAX_JERK_MRAD_S3);
+        bool poincare   = poincare_horizon_breach(cmd->pos_x_q16, cmd->pos_y_q16, cmd->pos_z_q16);
 
         /* 4. Hostile or negative anomaly */
         bool hostile = (cmd->anomaly_score < 0) || (cmd->anomaly_score >= OMEGA_KILL_ANOMALY_TH);
 
-        if (shortcut || replay || lightcone || guillotine || hostile) {
+        if (shortcut || replay || lightcone || guillotine || poincare || hostile) {
             g->kill_latched = true;
             g->rail_state = OMEGA_RAIL_CLAMPED;
             dec = OMEGA_DEC_KILL;
@@ -179,6 +191,7 @@ void omega_gate_eval(omega_gate_t *g, const omega_cmd_t *cmd, omega_reply_t *out
             else if (replay)     rsn = OMEGA_RSN_KILL_REPLAY;
             else if (lightcone)  rsn = OMEGA_RSN_KILL_LIGHTCONE;
             else if (guillotine) rsn = OMEGA_RSN_KILL_GUILLOTINE;
+            else if (poincare)   rsn = OMEGA_RSN_KILL_POINCARE;
             else                 rsn = OMEGA_RSN_KILL_HOSTILE;
         } else if (cmd->anomaly_score > 0) {
             /* TRAP -> shunt to mirror chamber at 0 mV */

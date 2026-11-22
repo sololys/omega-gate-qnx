@@ -30,7 +30,7 @@ A hallucination trapped inside an isolated process hurts no one. Damage begins o
 
 1. **Type-Chain Integrity:** Commands must step strictly through `RAW (0) -> ESTIMATE (1) -> STRUCT (2) -> VIABILITY (3) -> COMMITTED (4)`. Skipping any step latches `KILL`. Intermediate stages (`1..3`) stay in `HOLD` (`0 mV`); only `COMMITTED` may energize `5000 mV`.
 2. **The Timing Law:** `14 ms` maturation airlock, monotonic `seq_id`, one-way lightcone (`dt <= 133 ns`, replay `dt <= 0 => KILL`), and a 2-cycle deadtime state machine guaranteeing mutual exclusion (`Q_high * Q_low == 0`) followed by a single-cycle `5.00 V` pulse.
-3. **Physical Envelopes:** Hard integer limits at `80,000 mNm` (`80.0 Nm`) torque and `25,000 mrad/s^3` (`25.0 rad/s^3`) jerk.
+3. **Physical & Hyperbolic Envelopes:** Hard integer limits at `80,000 mNm` (`80.0 Nm`) torque, `25,000 mrad/s^3` (`25.0 rad/s^3`) jerk, and zero-float Poincaré ball $\mathbb{B}^3$ horizon check (`x^2 + y^2 + z^2 < 1.0` in Q16.16 $\to$ Q32.32, no square root or division by zero).
 4. **Mirror Chamber (`TRAP`):** Suspicious anomaly scores (`1..99`) are shunted asynchronously to `trap_mirror_daemon` via `MsgSendPulse` (`0 mV` on actuator rail); hostile scores (`>= 100`) latch `KILL`.
 5. **Append-Only SHA-256 Witness Chain & L01 Sovereignty:** Every verdict is chained with `index`, `seq_id`, `prev_hash`, and SHA-256. Once `KILL` latches, software cannot clear it — only an explicit Level-01 operator reset (`RISOR_L01_PHYSICAL_KEY`) appends a recovery record and returns to `HOLD` (`0 mV`).
 

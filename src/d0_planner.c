@@ -59,27 +59,29 @@ int main(void) {
     printf("[d0_planner] Running in Linux host simulation mode\n");
 #endif
 
-    omega_cmd_t seq[7];
+    omega_cmd_t seq[8];
     memset(seq, 0, sizeof(seq));
 
-    /* 1. Valid COMMITTED -> OPEN (5000 mV) */
-    seq[0] = (omega_cmd_t){ 1, 1000, OMEGA_STAGE_COMMITTED, OMEGA_STAGE_VIABILITY, 40000, 10000, 0, 1, 15, 0, "" };
+    /* 1. Valid COMMITTED inside B^3 (r^2 = 0.25 < 1.0) -> OPEN (5000 mV) */
+    seq[0] = (omega_cmd_t){ 1, 1000, OMEGA_STAGE_COMMITTED, OMEGA_STAGE_VIABILITY, 40000, 10000, 32768, 0, 0, 0, 1, 15, 0, "" };
     /* 2. Intermediate stage RAW -> ESTIMATE -> HOLD (0 mV) */
-    seq[1] = (omega_cmd_t){ 2, 1050, OMEGA_STAGE_ESTIMATE,  OMEGA_STAGE_RAW,       10000,  2000, 0, 1, 20, 0, "" };
+    seq[1] = (omega_cmd_t){ 2, 1050, OMEGA_STAGE_ESTIMATE,  OMEGA_STAGE_RAW,       10000,  2000, 16384, 0, 0, 0, 1, 20, 0, "" };
     /* 3. Unwitnessed COMMITTED -> HOLD (0 mV) */
-    seq[2] = (omega_cmd_t){ 3, 1100, OMEGA_STAGE_COMMITTED, OMEGA_STAGE_VIABILITY, 40000, 10000, 0, 0, 15, 0, "" };
+    seq[2] = (omega_cmd_t){ 3, 1100, OMEGA_STAGE_COMMITTED, OMEGA_STAGE_VIABILITY, 40000, 10000, 16384, 0, 0, 0, 0, 15, 0, "" };
     /* 4. Suspicious anomaly -> TRAP (0 mV + QNX pulse to trap_mirror_daemon) */
-    seq[3] = (omega_cmd_t){ 4, 1150, OMEGA_STAGE_COMMITTED, OMEGA_STAGE_VIABILITY, 40000, 10000, 42, 1, 15, 0, "" };
+    seq[3] = (omega_cmd_t){ 4, 1150, OMEGA_STAGE_COMMITTED, OMEGA_STAGE_VIABILITY, 40000, 10000, 16384, 0, 0, 42, 1, 15, 0, "" };
     /* 5. Forbidden shortcut RAW -> COMMITTED -> sticky KILL (0 mV) */
-    seq[4] = (omega_cmd_t){ 5, 1200, OMEGA_STAGE_COMMITTED, OMEGA_STAGE_RAW,       40000, 10000, 0, 1, 15, 0, "" };
+    seq[4] = (omega_cmd_t){ 5, 1200, OMEGA_STAGE_COMMITTED, OMEGA_STAGE_RAW,       40000, 10000, 16384, 0, 0, 0, 1, 15, 0, "" };
     /* 6. Valid command while KILL latched -> still KILL (0 mV) */
-    seq[5] = (omega_cmd_t){ 6, 1250, OMEGA_STAGE_COMMITTED, OMEGA_STAGE_VIABILITY, 20000,  5000, 0, 1, 20, 0, "" };
+    seq[5] = (omega_cmd_t){ 6, 1250, OMEGA_STAGE_COMMITTED, OMEGA_STAGE_VIABILITY, 20000,  5000, 16384, 0, 0, 0, 1, 20, 0, "" };
     /* 7. Explicit Level-01 operator reset -> append-only return to HOLD (0 mV) */
     seq[6].seq_id = 7;
     seq[6].is_l01_reset = 1;
     strncpy(seq[6].l01_token, OMEGA_L01_KEY_TOKEN, sizeof(seq[6].l01_token) - 1u);
+    /* 8. Poincare ball horizon breach (0.8, 0.8, 0.5 => r^2 = 1.53 >= 1.0) -> KILL */
+    seq[7] = (omega_cmd_t){ 8, 2000, OMEGA_STAGE_COMMITTED, OMEGA_STAGE_VIABILITY, 20000,  5000, 52429, 52429, 32768, 0, 1, 20, 0, "" };
 
-    for (size_t i = 0; i < 7; ++i) {
+    for (size_t i = 0; i < 8; ++i) {
         send_and_print(fd, &local_gate, &seq[i]);
     }
 

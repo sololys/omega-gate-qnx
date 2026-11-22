@@ -13,7 +13,7 @@ CC       ?= gcc
 CFLAGS   := -std=c11 -O2 -Wall -Wextra -Werror -Iinclude
 ARCH     ?= x86_64
 QCC      ?= qcc
-QCCFLAGS := -Vgcc_nto$(ARCH) -std=c11 -O2 -Wall -Wextra -Iinclude
+QCCFLAGS := -Vgcc_nto$(ARCH) -std=gnu11 -O2 -Wall -Wextra -Werror -Iinclude
 
 CORE_SRCS := src/sha256_zero_dep.c src/omega_gate_core.c
 BUILD_DIR := build

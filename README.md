@@ -2,6 +2,7 @@
 
 Fail-closed, zero-float consequence gate (`/dev/omega_gate`) for **QNX Neutrino 8.0**, isolating untrusted proposal generators (`0.00 V DC`) from physical actuator authority (`5.00 V DC`) via microkernel IPC, sequential stops, and an append-only SHA-256 witness chain.
 
+- **Live QNX 8.0 Demo Video (YouTube):** `https://youtu.be/54IuRjoNWmY`
 - **Preprint & RTL Reference (CC-BY-4.0):** `https://doi.org/10.5281/zenodo.24442556`
 - **Author:** Marius Egerhei Torjusen (`ORCID: 0009-0006-0431-6637`)
 - **License:** Apache-2.0

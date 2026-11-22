@@ -56,18 +56,32 @@ make qnx ARCH=x86_64       # Builds build/qnx_x86_64/{omega_gate_resmgr,d0_plann
 make qnx ARCH=aarch64le    # For Raspberry Pi 4 / QEMU aarch64
 ```
 
-### 3. Run Live Inside QNX 8.0 (QEMU)
+### 3. Run Live Inside QNX 8.0 (QEMU) — One-Command Reproduction
 
-Transfer the three binaries to your QNX 8.0 QEMU target (e.g. `/tmp/`) and run:
+With QNX SDP 8.0 sourced (`source ~/qnx800/qnxsdp-env.sh`) and `qemu-system-x86_64` installed:
 
-```sh
-/tmp/trap_mirror_daemon &
-/tmp/omega_gate_resmgr &
-sleep 1
-/tmp/d0_planner
+```bash
+./scripts/run_qnx8_qemu_demo.sh
 ```
 
-`d0_planner` executes the full canonical sequence over QNX IPC (`OPEN 5000 mV`, intermediate `HOLD 0 mV`, unwitnessed `HOLD 0 mV`, `TRAP` pulse to `trap_mirror_daemon`, shortcut `RAW -> COMMITTED -> KILL`, replay `KILL`, and Level-01 authorized reset to `HOLD`).
+Verified live output from **QNX Neutrino 8.0 (`QNX noname 8.0.0 x86pc x86_64`)** inside QEMU — bit-identical SHA-256 witness hashes (`bb09be7c325f` through `fe4553001c12`) across host C11 and QNX 8.0:
+
+```text
+QNX noname 8.0.0 2026/02/27-11:02:56EST x86pc x86_64
+[trap_mirror_daemon] Listening for TRAP pulses on 'omega_trap_mirror'...
+[omega_gate_resmgr] QNX 8.0 Resource Manager active at /dev/omega_gate (mirror_coid=1073741825)
+nrw-rw-rw-  1 root root 0 2026-11-22 18:51 /dev/omega_gate
+[d0_planner] Connected to QNX 8.0 gate at /dev/omega_gate
+[omega_gate_resmgr] seq=1 | OPEN | 5000 mV | AUTHORIZED_5000MV_PULSE        | cyc=10896 | head=bb09be7c325f
+[omega_gate_resmgr] seq=2 | HOLD |    0 mV | INTERMEDIATE_STAGE_HOLD        | cyc=11247 | head=b1875846cbc9
+[omega_gate_resmgr] seq=3 | HOLD |    0 mV | UNWITNESSED_OR_EARLY_HOLD      | cyc=12087 | head=fd6294e549ec
+[omega_gate_resmgr] seq=4 | TRAP |    0 mV | SHUNTED_TO_MIRROR_CHAMBER      | cyc=59671 | head=51204e1524f9
+[trap_mirror_daemon] CAPTURED #1 | anomaly_score=42 | isolated at 0.00 V DC
+[omega_gate_resmgr] seq=5 | KILL |    0 mV | FORBIDDEN_SHORTCUT_TYPE_BREACH | cyc=10747 | head=5feb2dd4f4e3
+[omega_gate_resmgr] seq=6 | KILL |    0 mV | KILL_LATCHED_REQUIRES_L01_RESET | cyc=11181 | head=c101fbeaa5c8
+[omega_gate_resmgr] seq=7 | HOLD |    0 mV | L01_AUTHORIZED_RESET_TO_HOLD   | cyc=18161 | head=45235f4fa9f4
+[omega_gate_resmgr] seq=8 | KILL |    0 mV | POINCARE_BOUNDARY_BREACH       | cyc=11408 | head=fe4553001c12
+```
 
 ---
 

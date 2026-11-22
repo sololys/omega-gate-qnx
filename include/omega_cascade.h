@@ -307,7 +307,10 @@ const char *omega_peer_name(uint32_t peer_id);
 const char *omega_cascade_verdict_name(uint8_t v);
 const char *omega_cascade_reason_name(uint32_t r);
 
-/* Canonical 16-byte L01 key digest helper */
+/* Canonical 16-byte L01 key digest & IEEE 802.3 CRC-32 helpers */
 void omega_compute_l01_key_hash16(const char *token, uint8_t out16[16]);
+uint32_t omega_crc32_ieee(const void *data, size_t len);
+void omega_cascade_seal_req(omega_cascade_req_t *req);
+bool omega_cascade_verify_req(const omega_cascade_req_t *req);
 
 #endif /* OMEGA_CASCADE_H */

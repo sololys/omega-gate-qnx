@@ -208,8 +208,29 @@ static void test_8_patient_fsync_400_and_tamper(void) {
     g_pass++;
 }
 
+/* 9. IEEE 802.3 CRC-32 golden vector ("123456789" -> 0xCBF43926, LE: 26 39 F4 CB) */
+static void test_9_crc32_ieee_golden_and_frame_seal(void) {
+    uint32_t c = omega_crc32_ieee("123456789", 9);
+    ASSERT_TRUE(c == 0xCBF43926u, "CRC-32 golden vector mismatch");
+    uint8_t le[4];
+    memcpy(le, &c, 4);
+    ASSERT_TRUE(le[0] == 0x26u && le[1] == 0x39u && le[2] == 0xF4u && le[3] == 0xCBu,
+                "CRC-32 little-endian wire bytes must be 26 39 F4 CB");
+
+    omega_cascade_req_t req;
+    memset(&req, 0, sizeof(req));
+    req.seq_id = 0x12345678u;
+    req.u_raw = 1000;
+    omega_cascade_seal_req(&req);
+    ASSERT_TRUE(omega_cascade_verify_req(&req), "sealed 128B request must verify");
+    req.u_raw ^= 1;
+    ASSERT_TRUE(!omega_cascade_verify_req(&req), "1-bit flip must fail CRC-32 verification");
+    printf("  [PASS] T9_crc32_ieee_golden_0xCBF43926_and_128B_seal\n");
+    g_pass++;
+}
+
 int main(void) {
-    printf("=== C11 DUAL-RATE HASHPRUNE SLUICE PARITY SUITE (8/8 Python Vectors) ===\n");
+    printf("=== C11 DUAL-RATE HASHPRUNE SLUICE PARITY SUITE (9/9 Vectors) ===\n");
     printf("sizeof(omega_cascade_req_t) = %zu B | sizeof(omega_cascade_rep_t) = %zu B\n",
            sizeof(omega_cascade_req_t), sizeof(omega_cascade_rep_t));
     test_1_order_independence();
@@ -220,6 +241,7 @@ int main(void) {
     test_6_involution_kill_latch();
     test_7_zeno_underflow_kill();
     test_8_patient_fsync_400_and_tamper();
+    test_9_crc32_ieee_golden_and_frame_seal();
     printf("=== SUMMARY: %d PASS, %d FAIL ===\n", g_pass, g_fail);
     return (g_fail == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
 }

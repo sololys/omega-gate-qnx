@@ -43,6 +43,7 @@ static void make_valid_req(omega_cascade_req_t *r, uint32_t seq_id) {
     r->pi_drift_ppm = 0u;
     r->state_s = 42;
     r->f_f_state_s = 42;
+    omega_cascade_seal_req(r);
 }
 
 int main(int argc, char **argv) {
@@ -79,6 +80,7 @@ int main(int argc, char **argv) {
     printf("\n=== [PHASE B] TRAP ANOMALY (score=75) -> ASYNC PULSE TO MIRROR ===\n");
     make_valid_req(&io.req, 403u);
     io.req.anomaly_score = 75;
+    omega_cascade_seal_req(&io.req);
     if (devctl(fd_d0, OMEGA_DCMD_CASCADE_EVAL, &io, sizeof(io), NULL) == EOK) {
         printf("[driver] seq=%-3u -> verdict=%-15s | %4u mV | reason=%s\n",
                io.rep.seq_id,
@@ -113,6 +115,7 @@ int main(int argc, char **argv) {
         io.req.seq_id = 405u;
         io.req.is_l01_reset = 1u;
         omega_compute_l01_key_hash16(OMEGA_L01_KEY_TOKEN, io.req.l01_key_hash16);
+        omega_cascade_seal_req(&io.req);
         if (devctl(fd_d2, OMEGA_DCMD_CASCADE_EVAL, &io, sizeof(io), NULL) == EOK) {
             printf("[driver] seq=%-3u (L01 reset) -> verdict=%-4s | %4u mV | reason=%s | wal=%u\n",
                    io.rep.seq_id,

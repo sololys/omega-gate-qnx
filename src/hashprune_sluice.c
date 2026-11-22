@@ -466,3 +466,29 @@ void omega_compute_l01_key_hash16(const char *token, uint8_t out16[16]) {
     sha256_final(&ctx, digest);
     memcpy(out16, digest, 16);
 }
+
+/* IEEE 802.3 / ISO-HDLC CRC-32 (reflected poly 0xEDB88320, init/xorout 0xFFFFFFFF) */
+uint32_t omega_crc32_ieee(const void *data, size_t len) {
+    const uint8_t *p = (const uint8_t *)data;
+    uint32_t crc = 0xFFFFFFFFu;
+    for (size_t i = 0; i < len; ++i) {
+        crc ^= (uint32_t)p[i];
+        for (int b = 0; b < 8; ++b) {
+            if (crc & 1u) {
+                crc = (crc >> 1) ^ 0xEDB88320u;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    return crc ^ 0xFFFFFFFFu;
+}
+
+void omega_cascade_seal_req(omega_cascade_req_t *req) {
+    req->crc32 = omega_crc32_ieee(req, offsetof(omega_cascade_req_t, crc32));
+}
+
+bool omega_cascade_verify_req(const omega_cascade_req_t *req) {
+    uint32_t expected = omega_crc32_ieee(req, offsetof(omega_cascade_req_t, crc32));
+    return req->crc32 == expected;
+}

@@ -48,6 +48,7 @@ static omega_cascade_rep_t g_last_rep;
 static uint64_t            g_wn_chain  = 0x0070464153455350ULL;
 static uint64_t            g_wal_chain = 0x04115249534F5201ULL;
 static uint32_t            g_tx_count  = 0u;
+static uint32_t            g_inject_stall_ms = 0u;
 
 static bool is_all_zero(const uint8_t *buf, size_t n) {
     for (size_t i = 0; i < n; ++i) {
@@ -96,10 +97,26 @@ static int spi_sim_devctl(resmgr_context_t *ctp, io_devctl_t *msg, RESMGR_OCB_T 
             return _RESMGR_PTR(ctp, &msg->o, sizeof(msg->o) + sizeof(*info));
         }
 
+        case OMEGA_DCMD_SPI_SIM_INJECT_STALL: {
+            uint32_t *ms = (uint32_t *)_DEVCTL_DATA(msg->i);
+            g_inject_stall_ms = *ms;
+            printf("[spi_fpga_sim] ARMED STATE_REPLY stall injection: %u ms\n",
+                   (unsigned)g_inject_stall_ms);
+            fflush(stdout);
+            memset(&msg->o, 0, sizeof(msg->o));
+            return _RESMGR_PTR(ctp, &msg->o, sizeof(msg->o));
+        }
+
         case DCMD_SPI_DATA_XCHNG: {
             spi_xchng_t *x = (spi_xchng_t *)_DEVCTL_DATA(msg->i);
             uint32_t n = x->nbytes;
             uint8_t *payload = x->data;
+
+            if (n == 128u && g_inject_stall_ms > 0u) {
+                uint32_t stall = g_inject_stall_ms;
+                g_inject_stall_ms = 0u;
+                (void)delay(stall);
+            }
 
             if (n == 64u && is_all_zero(payload, 64u)) {
                 /* Read-only 64 B 0x00 status poll: return fresh g_last_rep */

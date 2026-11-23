@@ -34,6 +34,13 @@
 #define OMEGA_L01_DEFAULT_COOLDOWN_MS  30000u
 #define OMEGA_L01_DEFAULT_EXPIRY_MS    60000u
 
+/* Monotonically nested QNX CLOCK_MONOTONIC IPC budgets (ns) */
+#define OMEGA_IPC_SPI_TIMEOUT_NS       (20000000ULL)   /* 20 ms per SPI xfer (max 40 ms TX+RX) */
+#define OMEGA_IPC_HEARTBEAT_TIMEOUT_NS (20000000ULL)   /* 20 ms heartbeat/register */
+#define OMEGA_IPC_D1_TO_D2_TIMEOUT_NS  (60000000ULL)   /* 60 ms D1 -> D2 */
+#define OMEGA_IPC_D0_TO_D1_TIMEOUT_NS  (80000000ULL)   /* 80 ms D0 -> D1 */
+#define OMEGA_IPC_INGRESS_TIMEOUT_NS   (100000000ULL)  /* 100 ms ser2 -> D0 */
+
 /* Causal UWB Time-of-Flight bounds (ns): 1 ns <= tof <= 133 ns (~20 m) */
 #define OMEGA_TOF_MIN_NS               1u
 #define OMEGA_TOF_MAX_NS               133u
@@ -185,9 +192,10 @@ typedef union {
 
 #ifdef __QNX__
 #include <devctl.h>
-#define OMEGA_DCMD_CASCADE_EVAL   __DIOTF(_DCMD_MISC, 10, omega_cascade_io_t)
-#define OMEGA_DCMD_PEER_REGISTER  __DIOT(_DCMD_MISC,  11, omega_peer_hello_t)
-#define OMEGA_DCMD_PEER_HEARTBEAT __DIOT(_DCMD_MISC,  12, omega_peer_hello_t)
+#define OMEGA_DCMD_CASCADE_EVAL         __DIOTF(_DCMD_MISC, 10, omega_cascade_io_t)
+#define OMEGA_DCMD_PEER_REGISTER        __DIOT(_DCMD_MISC,  11, omega_peer_hello_t)
+#define OMEGA_DCMD_PEER_HEARTBEAT       __DIOT(_DCMD_MISC,  12, omega_peer_hello_t)
+#define OMEGA_DCMD_SPI_SIM_INJECT_STALL __DIOT(_DCMD_MISC,  13, uint32_t)
 #endif
 
 /* ============================================================================

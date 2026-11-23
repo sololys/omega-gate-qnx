@@ -36,12 +36,26 @@ static int g_d1_fd = -1;
 static int g_mirror_coid = -1;
 static omega_capsule_ctx_t g_cap_ctx;
 
+static void d0_fill_timeout_hold(omega_cascade_rep_t *rep, uint32_t seq_id) {
+    memset(rep, 0, sizeof(*rep));
+    rep->seq_id      = seq_id;
+    rep->verdict     = OMEGA_CVERD_HOLD;
+    rep->stop_stage  = 1u;
+    rep->actuator_mv = 0u;
+    rep->omega_y_mv  = 5000u;
+    rep->u_safe_out  = 0;
+    rep->flags_out   = OMEGA_OUT_CROWBAR_GND | OMEGA_OUT_WATCHDOG_LOCKED;
+    rep->reason_code = OMEGA_CRSN_WATCHDOG_TIMEOUT;
+}
+
 static void *d0_heartbeat_thread(void *arg) {
     (void)arg;
     omega_peer_hello_t h = { OMEGA_PEER_D0_TRAP, (int32_t)getpid() };
     while (1) {
         if (g_d2_fd >= 0) {
-            (void)devctl(g_d2_fd, OMEGA_DCMD_PEER_HEARTBEAT, &h, sizeof(h), NULL);
+            (void)omega_qnx_devctl_timed(g_d2_fd, OMEGA_DCMD_PEER_HEARTBEAT,
+                                         &h, sizeof(h), NULL,
+                                         OMEGA_IPC_HEARTBEAT_TIMEOUT_NS);
         }
         usleep(OMEGA_WDG_HB_INTERVAL_MS * 1000u);
     }
@@ -101,11 +115,14 @@ static int d0_io_devctl(resmgr_context_t *ctp, io_devctl_t *msg, RESMGR_OCB_T *o
             d0_eval_stage(&fwd.req);
         }
 
-        if (devctl(g_d1_fd, OMEGA_DCMD_CASCADE_EVAL, &fwd, sizeof(fwd), NULL) != EOK) {
-            return EIO;
+        uint32_t seq_id = fwd.req.seq_id;
+        if (omega_qnx_devctl_timed(g_d1_fd, OMEGA_DCMD_CASCADE_EVAL, &fwd, sizeof(fwd),
+                                   NULL, OMEGA_IPC_D0_TO_D1_TIMEOUT_NS) != EOK) {
+            d0_fill_timeout_hold(&cio->rep, seq_id);
+        } else {
+            cio->rep = fwd.rep;
         }
 
-        cio->rep = fwd.rep;
         memset(&msg->o, 0, sizeof(msg->o));
         msg->o.nbytes = sizeof(omega_cascade_rep_t);
         return _RESMGR_PTR(ctp, &msg->o, sizeof(msg->o) + sizeof(omega_cascade_rep_t));
@@ -116,13 +133,16 @@ static int d0_io_devctl(resmgr_context_t *ctp, io_devctl_t *msg, RESMGR_OCB_T *o
     omega_cascade_io_t *io = (omega_cascade_io_t *)_DEVCTL_DATA(msg->i);
     omega_cascade_io_t fwd;
     fwd.req = io->req;
+    uint32_t seq_id = fwd.req.seq_id;
     d0_eval_stage(&fwd.req);
 
-    if (devctl(g_d1_fd, OMEGA_DCMD_CASCADE_EVAL, &fwd, sizeof(fwd), NULL) != EOK) {
-        return EIO;
+    if (omega_qnx_devctl_timed(g_d1_fd, OMEGA_DCMD_CASCADE_EVAL, &fwd, sizeof(fwd),
+                               NULL, OMEGA_IPC_D0_TO_D1_TIMEOUT_NS) != EOK) {
+        d0_fill_timeout_hold(&io->rep, seq_id);
+    } else {
+        io->rep = fwd.rep;
     }
 
-    io->rep = fwd.rep;
     memset(&msg->o, 0, sizeof(msg->o));
     msg->o.nbytes = sizeof(omega_cascade_rep_t);
     return _RESMGR_PTR(ctp, &msg->o, sizeof(msg->o) + sizeof(omega_cascade_rep_t));
@@ -153,7 +173,9 @@ int main(void) {
     }
 
     omega_peer_hello_t h = { OMEGA_PEER_D0_TRAP, (int32_t)getpid() };
-    (void)devctl(g_d2_fd, OMEGA_DCMD_PEER_REGISTER, &h, sizeof(h), NULL);
+    (void)omega_qnx_devctl_timed(g_d2_fd, OMEGA_DCMD_PEER_REGISTER,
+                                 &h, sizeof(h), NULL,
+                                 OMEGA_IPC_HEARTBEAT_TIMEOUT_NS);
 
     pthread_t hb_thr;
     (void)pthread_create(&hb_thr, NULL, d0_heartbeat_thread, NULL);

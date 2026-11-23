@@ -109,12 +109,15 @@ int main(int argc, char **argv) {
         int rc = read_exact(ser_fd, (uint8_t *)&io.ingress, sizeof(io.ingress));
         if (rc <= 0) break;
 
-        if (devctl(d0_fd, OMEGA_DCMD_CAPSULE205_EVAL, &io, sizeof(io), NULL) != EOK) {
+        if (omega_qnx_devctl_timed(d0_fd, OMEGA_DCMD_CAPSULE205_EVAL, &io, sizeof(io),
+                                   NULL, OMEGA_IPC_INGRESS_TIMEOUT_NS) != EOK) {
             memset(&io.rep, 0, sizeof(io.rep));
-            io.rep.verdict     = OMEGA_CVERD_KILL;
-            io.rep.stop_stage  = 2u;
+            io.rep.verdict     = OMEGA_CVERD_HOLD;
+            io.rep.stop_stage  = 1u;
+            io.rep.actuator_mv = 0u;
             io.rep.omega_y_mv  = 5000u;
-            io.rep.reason_code = OMEGA_CRSN_KILL_HOSTILE;
+            io.rep.flags_out   = OMEGA_OUT_CROWBAR_GND | OMEGA_OUT_WATCHDOG_LOCKED;
+            io.rep.reason_code = OMEGA_CRSN_WATCHDOG_TIMEOUT;
         }
 
         printf("[ser2_bridge] frame=%d seq=%u -> verdict=%s mv=%u rsn=%s\n",

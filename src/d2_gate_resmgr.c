@@ -27,6 +27,7 @@
 #include <devctl.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <hw/inout.h>
 #include <hw/io-spi.h>
 #include <pthread.h>
 #include <sched.h>
@@ -34,6 +35,7 @@
 #include <sys/dispatch.h>
 #include <sys/iofunc.h>
 #include <sys/iomsg.h>
+#include <sys/mman.h>
 #include <sys/neutrino.h>
 #include <sys/resmgr.h>
 #include <sys/syspage.h>
@@ -78,6 +80,41 @@ static omega_l01_reset_gov_t g_l01_gov;
 static int                   g_spi_fd             = -1;
 static const char           *g_spi_dev_path       = NULL;
 
+static bool                  g_hw_io_enabled      = false;
+static uint64_t              g_hw_io_port         = 0u;
+static uintptr_t             g_hw_io_handle       = MAP_DEVICE_FAILED;
+static uint8_t               g_hw_last_byte       = 0xFFu;
+
+static inline void d2_hw_raw_out8(uint8_t val) {
+    if (!g_hw_io_enabled || g_hw_io_handle == MAP_DEVICE_FAILED) {
+        return;
+    }
+#ifdef __X86_64__
+    out8((uint16_t)g_hw_io_handle, val);
+#else
+    out8(g_hw_io_handle, val);
+#endif
+}
+
+static void d2_hw_write_clamp(omega_cascade_verdict_t verdict,
+                              uint32_t voltage_mv,
+                              uint32_t flags_out) {
+    if (!g_hw_io_enabled || g_hw_io_handle == MAP_DEVICE_FAILED) {
+        return;
+    }
+    uint8_t out_byte;
+    if ((verdict == OMEGA_CVERD_OPEN || verdict == OMEGA_CVERD_CONTINUOUS_PASS) &&
+        !g_watchdog_locked && !g_kill_latched && voltage_mv > 0u) {
+        out_byte = (uint8_t)(flags_out & 0xFFu);
+    } else {
+        out_byte = (uint8_t)(flags_out & (uint32_t)(~OMEGA_OUT_RAIL_5V_EN) & 0xFFu);
+    }
+    if (out_byte != g_hw_last_byte) {
+        d2_hw_raw_out8(out_byte);
+        g_hw_last_byte = out_byte;
+    }
+}
+
 static bool d2_all_peers_alive(void) {
     uint64_t now = now_monotonic_ns();
     uint64_t limit_ns = (uint64_t)OMEGA_WDG_TIMEOUT_MS * 1000000ULL;
@@ -117,8 +154,11 @@ static void print_hex6(const uint8_t h[32], char out[13]) {
     out[12] = '\0';
 }
 
-/* Two-step QNX DCMD_SPI_DATA_XCHNG: 128 B sealed TX + 64 B 0x00 MISO readback */
-static bool d2_spi_cosign(const omega_cascade_req_t *in_req, omega_cascade_rep_t *out_hw_rep) {
+/* Two-step QNX DCMD_SPI_DATA_XCHNG: 128 B sealed TX + 64 B 0x00 MISO readback (TimerTimeout guarded) */
+static bool d2_spi_cosign(const omega_cascade_req_t *in_req, omega_cascade_rep_t *out_hw_rep,
+                          int *out_fault_step, int *out_fault_rc) {
+    if (out_fault_step) *out_fault_step = 0;
+    if (out_fault_rc)   *out_fault_rc   = EOK;
     if (g_spi_fd < 0 || !in_req || !out_hw_rep) {
         return false;
     }
@@ -132,7 +172,12 @@ static bool d2_spi_cosign(const omega_cascade_req_t *in_req, omega_cascade_rep_t
     omega_spi_xfer128_t x128;
     x128.hdr.nbytes = 128u;
     memcpy(x128.data, &wire_req, 128u);
-    if (devctl(g_spi_fd, DCMD_SPI_DATA_XCHNG, &x128, sizeof(x128), NULL) != EOK) {
+    int tx_rc = omega_qnx_devctl_timed(g_spi_fd, DCMD_SPI_DATA_XCHNG, &x128, sizeof(x128),
+                                       NULL, OMEGA_IPC_SPI_TIMEOUT_NS);
+    if (tx_rc != EOK) {
+        d2_hw_write_clamp(OMEGA_CVERD_HOLD, 0u, OMEGA_OUT_CROWBAR_GND);
+        if (out_fault_step) *out_fault_step = 1;
+        if (out_fault_rc)   *out_fault_rc   = tx_rc;
         return false;
     }
 
@@ -140,7 +185,12 @@ static bool d2_spi_cosign(const omega_cascade_req_t *in_req, omega_cascade_rep_t
     omega_spi_xfer64_t x64;
     memset(&x64, 0, sizeof(x64));
     x64.hdr.nbytes = 64u;
-    if (devctl(g_spi_fd, DCMD_SPI_DATA_XCHNG, &x64, sizeof(x64), NULL) != EOK) {
+    int rx_rc = omega_qnx_devctl_timed(g_spi_fd, DCMD_SPI_DATA_XCHNG, &x64, sizeof(x64),
+                                       NULL, OMEGA_IPC_SPI_TIMEOUT_NS);
+    if (rx_rc != EOK) {
+        d2_hw_write_clamp(OMEGA_CVERD_HOLD, 0u, OMEGA_OUT_CROWBAR_GND);
+        if (out_fault_step) *out_fault_step = 2;
+        if (out_fault_rc)   *out_fault_rc   = rx_rc;
         return false;
     }
 
@@ -170,6 +220,7 @@ static int d2_close_ocb(resmgr_context_t *ctp, void *reserved, RESMGR_OCB_T *ocb
         g_peer_alive[p] = false;
         g_watchdog_locked = true;
         g_watchdog_dead_peer = p;
+        d2_hw_write_clamp(OMEGA_CVERD_HOLD, 0u, OMEGA_OUT_CROWBAR_GND | OMEGA_OUT_WATCHDOG_LOCKED);
         d2_wal_seal(0u, OMEGA_CVERD_HOLD, OMEGA_CRSN_WATCHDOG_PEER_DEAD, 0u);
         char h12[13];
         print_hex6(g_head_hash, h12);
@@ -196,6 +247,7 @@ static int d2_wdg_pulse_handler(message_context_t *ctp, int code, unsigned flags
                 if (!g_watchdog_locked) {
                     g_watchdog_locked = true;
                     g_watchdog_dead_peer = p;
+                    d2_hw_write_clamp(OMEGA_CVERD_HOLD, 0u, OMEGA_OUT_CROWBAR_GND | OMEGA_OUT_WATCHDOG_LOCKED);
                     d2_wal_seal(0u, OMEGA_CVERD_HOLD, OMEGA_CRSN_WATCHDOG_TIMEOUT, 0u);
                     char h12[13];
                     print_hex6(g_head_hash, h12);
@@ -251,6 +303,8 @@ static int d2_io_devctl(resmgr_context_t *ctp, io_devctl_t *msg, RESMGR_OCB_T *o
     memset(&rep, 0, sizeof(rep));
 
     uint64_t t0 = ClockCycles();
+    int spi_fault_step = 0;
+    int spi_fault_rc   = EOK;
     rep.seq_id = req.seq_id;
     rep.omega_y_mv = 5000u; /* Orthogonal existence rail: always 5000 mV */
     rep.admissible_count = 41u;
@@ -351,7 +405,7 @@ static int d2_io_devctl(resmgr_context_t *ctp, io_devctl_t *msg, RESMGR_OCB_T *o
             else if (g_spi_dev_path != NULL) {
                 omega_cascade_rep_t hw_rep;
                 memset(&hw_rep, 0, sizeof(hw_rep));
-                bool xfer_ok = d2_spi_cosign(&req, &hw_rep);
+                bool xfer_ok = d2_spi_cosign(&req, &hw_rep, &spi_fault_step, &spi_fault_rc);
                 bool hw_open = xfer_ok && omega_cascade_verify_hw_cosign(&req, &hw_rep);
                 if (!hw_open) {
                     if (xfer_ok && hw_rep.verdict == OMEGA_CVERD_KILL) {
@@ -405,9 +459,25 @@ static int d2_io_devctl(resmgr_context_t *ctp, io_devctl_t *msg, RESMGR_OCB_T *o
         }
     }
 
+    d2_hw_write_clamp((omega_cascade_verdict_t)rep.verdict, rep.actuator_mv, rep.flags_out);
+
     rep.ledger_len = g_ledger_len;
     memcpy(rep.head_hash, g_head_hash, 32);
     uint64_t dt_cyc = ClockCycles() - t0;
+
+    /* Reply BEFORE UART stdout logging so 115200-baud serial never blocks the RT veto path */
+    io->rep = rep;
+    memset(&msg->o, 0, sizeof(msg->o));
+    msg->o.nbytes = sizeof(omega_cascade_rep_t);
+    (void)MsgReply(ctp->rcvid, EOK, &msg->o, sizeof(msg->o) + sizeof(omega_cascade_rep_t));
+
+    if (spi_fault_step == 1) {
+        printf("[d2_gate] SPI TX fault (step=1, rc=%d) -> immediate 0 mV clamp, RX skipped\n", spi_fault_rc);
+        fflush(stdout);
+    } else if (spi_fault_step == 2) {
+        printf("[d2_gate] SPI RX fault (step=2, rc=%d) -> immediate 0 mV clamp\n", spi_fault_rc);
+        fflush(stdout);
+    }
 
     if (rep.verdict != OMEGA_CVERD_FSYNC_WAIT || req.seq_id == 1u || req.seq_id == 400u) {
         char h12[13];
@@ -423,10 +493,7 @@ static int d2_io_devctl(resmgr_context_t *ctp, io_devctl_t *msg, RESMGR_OCB_T *o
         fflush(stdout);
     }
 
-    io->rep = rep;
-    memset(&msg->o, 0, sizeof(msg->o));
-    msg->o.nbytes = sizeof(omega_cascade_rep_t);
-    return _RESMGR_PTR(ctp, &msg->o, sizeof(msg->o) + sizeof(omega_cascade_rep_t));
+    return _RESMGR_NOREPLY;
 }
 
 int main(int argc, char **argv) {
@@ -440,6 +507,9 @@ int main(int argc, char **argv) {
             cooldown_ms = (uint32_t)strtoul(argv[++i], NULL, 10);
         } else if (strcmp(argv[i], "--l01-expiry-ms") == 0 && (i + 1) < argc) {
             expiry_ms = (uint32_t)strtoul(argv[++i], NULL, 10);
+        } else if (strcmp(argv[i], "--hw-io-port") == 0 && (i + 1) < argc) {
+            g_hw_io_port = (uint64_t)strtoull(argv[++i], NULL, 0);
+            g_hw_io_enabled = true;
         }
     }
 
@@ -452,13 +522,29 @@ int main(int argc, char **argv) {
     omega_compute_l01_key_hash16(OMEGA_L01_KEY_TOKEN, g_expected_l01_hash);
     omega_l01_gov_init(&g_l01_gov, cooldown_ms, expiry_ms);
 
+    if (g_hw_io_enabled) {
+        if (ThreadCtl(_NTO_TCTL_IO_LEVEL, (void *)_NTO_IO_LEVEL_1) == -1) {
+            perror("[d2_gate] ThreadCtl(_NTO_TCTL_IO_LEVEL, _NTO_IO_LEVEL_1)");
+            return EXIT_FAILURE;
+        }
+        g_hw_io_handle = mmap_device_io(1u, g_hw_io_port);
+        if (g_hw_io_handle == MAP_DEVICE_FAILED) {
+            perror("[d2_gate] mmap_device_io");
+            return EXIT_FAILURE;
+        }
+        /* Hard startup clamp: force 0.00 V DC before attaching device or accepting IPC */
+        d2_hw_raw_out8(0x00u);
+        g_hw_last_byte = 0x00u;
+    }
+
     if (g_spi_dev_path != NULL) {
         g_spi_fd = open(g_spi_dev_path, O_RDWR);
         if (g_spi_fd >= 0) {
             spi_cfg_t cfg;
             cfg.mode = SPI_MODE_WORD_WIDTH_8 | SPI_MODE_CPHA_0 | SPI_MODE_CPOL_0 | SPI_MODE_BODER_MSB;
             cfg.clock_rate = 1000000u;
-            (void)devctl(g_spi_fd, DCMD_SPI_SET_CONFIG, &cfg, sizeof(cfg), NULL);
+            (void)omega_qnx_devctl_timed(g_spi_fd, DCMD_SPI_SET_CONFIG, &cfg, sizeof(cfg),
+                                         NULL, OMEGA_IPC_SPI_TIMEOUT_NS);
         } else {
             perror("[d2_gate] open --spi-dev (will fail-closed on OPEN)");
         }
@@ -503,6 +589,18 @@ int main(int argc, char **argv) {
         return EXIT_FAILURE;
     }
 
+    uint32_t old_cp_ns = 0u;
+    uint64_t old_tol_ns = 0u;
+    int clk_rc = omega_qnx_lock_hard_clock(&old_cp_ns, &old_tol_ns);
+    if (clk_rc != EOK) {
+        if (g_hw_io_enabled) d2_hw_raw_out8(0x00u);
+        fprintf(stderr, "[d2_gate] FATAL: omega_qnx_lock_hard_clock failed (rc=%d)\n", clk_rc);
+        return EXIT_FAILURE;
+    }
+    printf("[d2_gate] HARD_CLOCK locked: tick_res=%u ns (0=tickless) | tol %llu ns -> 0 ns\n",
+           (unsigned)old_cp_ns, (unsigned long long)old_tol_ns);
+    fflush(stdout);
+
     struct sigevent ev;
     SIGEV_PULSE_INIT(&ev, wdg_coid, OMEGA_PRIO_D2_GATE, wdg_code, 0);
     timer_t tid;
@@ -520,7 +618,23 @@ int main(int argc, char **argv) {
     }
 
     if (omega_qnx_lock_memory_and_sandbox() != 0) {
+        if (g_hw_io_enabled) d2_hw_raw_out8(0x00u);
         return EXIT_FAILURE;
+    }
+
+    if (g_hw_io_enabled) {
+        errno = 0;
+        int deny_rc = ThreadCtl(_NTO_TCTL_IO_LEVEL, (void *)_NTO_IO_LEVEL_2);
+        int deny_err = errno;
+        if (deny_rc != -1 || deny_err != EPERM) {
+            d2_hw_raw_out8(0x00u);
+            fprintf(stderr, "[d2_gate] FATAL: PROCMGR_AID_IO negative self-test failed (rc=%d, errno=%d)\n",
+                    deny_rc, deny_err);
+            return EXIT_FAILURE;
+        }
+        printf("[d2_gate] HW I/O port=0x%llx clamped=0x00 | PROCMGR_AID_IO negative self-test: PASS (rc=-1, errno=%d EPERM)\n",
+               (unsigned long long)g_hw_io_port, deny_err);
+        fflush(stdout);
     }
 
     printf("[d2_gate] Active at %s | SCHED_FIFO prio=%d (fixed+mlock+sandbox) | wdg=%ums/%ums | l01_cd=%ums | spi=%s | pid=%d\n",

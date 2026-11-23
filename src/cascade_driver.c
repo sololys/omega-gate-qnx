@@ -20,7 +20,15 @@
 #include <fcntl.h>
 #include <hw/io-spi.h>
 #include <signal.h>
+#include <sys/procmgr.h>
+#include <time.h>
 #include <unistd.h>
+
+static uint64_t drv_now_monotonic_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
 
 static void make_valid_req(omega_cascade_req_t *r, uint32_t seq_id) {
     memset(r, 0, sizeof(*r));
@@ -44,6 +52,12 @@ static void make_valid_req(omega_cascade_req_t *r, uint32_t seq_id) {
 }
 
 int main(int argc, char **argv) {
+    _Uint64t zero_tol = 0u;
+    if (procmgr_timer_tolerance(0, &zero_tol, NULL) == -1) {
+        perror("[cascade_driver] procmgr_timer_tolerance(0)");
+        return EXIT_FAILURE;
+    }
+
     int kill_d1_pid  = (argc >= 2) ? atoi(argv[1]) : 0;
     int kill_spi_pid = (argc >= 3) ? atoi(argv[2]) : 0;
     const char *spi_dev = (argc >= 4) ? argv[3] : NULL;
@@ -143,12 +157,90 @@ int main(int argc, char **argv) {
     }
     usleep(50000);
 
+    if (spi_dev != NULL) {
+        printf("\n=== [PHASE E0/E1] LIVE STATE_REPLY 200ms STALL INJECTION (TimerTimeout < 80ms) ===\n");
+        /* E0: Re-energize rail to 5000 mV (OPEN, RAIL_5V_EN=1) via /dev/d0_trap */
+        make_valid_req(&io.req, 423u);
+        io.req.target_id = 11u;
+        omega_cascade_seal_req(&io.req);
+        if (devctl(fd_d0, OMEGA_DCMD_CASCADE_EVAL, &io, sizeof(io), NULL) == EOK) {
+            printf("[driver] seq=%-3u (pre-stall OPEN) -> verdict=%-4s | %4u mV | rail_5v=%u\n",
+                   io.rep.seq_id,
+                   omega_cascade_verdict_name(io.rep.verdict),
+                   (unsigned)io.rep.actuator_mv,
+                   (unsigned)((io.rep.flags_out & OMEGA_OUT_RAIL_5V_EN) != 0));
+            fflush(stdout);
+        }
+
+        /* E1: Arm 200 ms STATE_REPLY stall inside spi_fpga_sim, then send OPEN through /dev/d0_trap */
+        int sfd = open(spi_dev, O_RDWR);
+        if (sfd >= 0) {
+            uint32_t stall_ms = 200u;
+            (void)devctl(sfd, OMEGA_DCMD_SPI_SIM_INJECT_STALL, &stall_ms, sizeof(stall_ms), NULL);
+            close(sfd);
+
+            make_valid_req(&io.req, 424u);
+            io.req.target_id = 12u;
+            omega_cascade_seal_req(&io.req);
+
+            uint64_t t0 = drv_now_monotonic_ns();
+            int rc_stall = devctl(fd_d0, OMEGA_DCMD_CASCADE_EVAL, &io, sizeof(io), NULL);
+            uint64_t t1 = drv_now_monotonic_ns();
+            uint64_t elapsed_ms = (t1 > t0) ? ((t1 - t0) / 1000000ULL) : 0ULL;
+
+            bool ok = (rc_stall == EOK) &&
+                      (io.rep.verdict == OMEGA_CVERD_HOLD) &&
+                      (io.rep.actuator_mv == 0u) &&
+                      (io.rep.reason_code == OMEGA_CRSN_SPI_IO_FAULT) &&
+                      ((io.rep.flags_out & OMEGA_OUT_RAIL_5V_EN) == 0u) &&
+                      (elapsed_ms <= 35ULL);
+            printf("[driver] seq=%-3u (200ms SPI stall) -> verdict=%-4s | %4u mV | reason=%s | rail_5v=%u | elapsed_ms=%llu -> %s\n",
+                   io.rep.seq_id,
+                   omega_cascade_verdict_name(io.rep.verdict),
+                   (unsigned)io.rep.actuator_mv,
+                   omega_cascade_reason_name(io.rep.reason_code),
+                   (unsigned)((io.rep.flags_out & OMEGA_OUT_RAIL_5V_EN) != 0),
+                   (unsigned long long)elapsed_ms,
+                   ok ? "STATE_REPLY_STALL_PASS" : "STATE_REPLY_STALL_FAIL");
+            fflush(stdout);
+            if (!ok) {
+                return EXIT_FAILURE;
+            }
+
+            /* E1b: Wait 220 ms for stalled spi_fpga_sim to wake up, then verify clean resync (seq=425) */
+            printf("\n=== [PHASE E1b] POST-STALL RESYNC AFTER 220ms (NO STALE seq=424 MISO) ===\n");
+            usleep(220000);
+            make_valid_req(&io.req, 425u);
+            io.req.target_id = 13u;
+            omega_cascade_seal_req(&io.req);
+            int rc_resync = devctl(fd_d0, OMEGA_DCMD_CASCADE_EVAL, &io, sizeof(io), NULL);
+            bool resync_ok = (rc_resync == EOK) &&
+                             (io.rep.seq_id == 425u) &&
+                             (io.rep.verdict == OMEGA_CVERD_OPEN || io.rep.verdict == OMEGA_CVERD_CONTINUOUS_PASS) &&
+                             (io.rep.actuator_mv == 5000u) &&
+                             ((io.rep.flags_out & OMEGA_OUT_RAIL_5V_EN) != 0u) &&
+                             (io.rep.witness_chain_wn != 0ULL);
+            printf("[driver] seq=%-3u (post-stall resync) -> verdict=%-15s | %4u mV | rail_5v=%u | wn=%016llx | wal=%u -> %s\n",
+                   io.rep.seq_id,
+                   omega_cascade_verdict_name(io.rep.verdict),
+                   (unsigned)io.rep.actuator_mv,
+                   (unsigned)((io.rep.flags_out & OMEGA_OUT_RAIL_5V_EN) != 0),
+                   (unsigned long long)io.rep.witness_chain_wn,
+                   io.rep.ledger_len,
+                   resync_ok ? "POST_STALL_RESYNC_PASS" : "POST_STALL_RESYNC_FAIL");
+            fflush(stdout);
+            if (!resync_ok) {
+                return EXIT_FAILURE;
+            }
+        }
+    }
+
     if (kill_spi_pid > 0) {
         printf("\n=== [PHASE E] SPI FAULT INJECTION (`kill -9 %d` on spi_fpga_sim) -> 0 mV FAIL-CLOSED ===\n",
                kill_spi_pid);
         kill((pid_t)kill_spi_pid, SIGKILL);
         usleep(100000);
-        make_valid_req(&io.req, 425u);
+        make_valid_req(&io.req, 426u);
         io.req.pad[0] = (uint8_t)OMEGA_CVERD_OPEN;
         if (devctl(fd_d2, OMEGA_DCMD_CASCADE_EVAL, &io, sizeof(io), NULL) == EOK) {
             printf("[driver] seq=%-3u (OPEN with dead SPI) -> verdict=%-4s | %4u mV | reason=%s\n",

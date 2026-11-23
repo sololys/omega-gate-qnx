@@ -12,6 +12,7 @@
  */
 
 #include "omega_gate.h"
+#include "qnx_rt_cage.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -89,9 +90,8 @@ int main(void) {
     omega_gate_init(&g_gate);
     g_mirror_coid = name_open(OMEGA_TRAP_MIRROR_NAME, 0);
 
-    dispatch_t *dpp = dispatch_create();
+    dispatch_t *dpp = omega_qnx_create_fixed_dispatch();
     if (!dpp) {
-        perror("dispatch_create");
         return EXIT_FAILURE;
     }
 
@@ -115,7 +115,11 @@ int main(void) {
         return EXIT_FAILURE;
     }
 
-    printf("[omega_gate_resmgr] QNX 8.0 Resource Manager active at %s (mirror_coid=%d)\n",
+    if (omega_qnx_lock_memory_and_sandbox() != 0) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[omega_gate_resmgr] QNX 8.0 Resource Manager active at %s (fixed+mlock+sandbox, mirror_coid=%d)\n",
            OMEGA_DEV_PATH, g_mirror_coid);
     fflush(stdout);
 

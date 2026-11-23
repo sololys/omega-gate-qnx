@@ -5,9 +5,17 @@
  * (DCMD_SPI_SET_CONFIG, DCMD_SPI_GET_DRVINFO, DCMD_SPI_GET_DEVINFO,
  *  DCMD_SPI_DATA_XCHNG) on /dev/spi_fpga_sim (or argv[1]).
  *
+ * Real-time discipline:
+ *   - Fixed priority SCHED_FIFO 30 with _NTO_CHF_FIXED_PRIORITY so
+ *     lower-priority callers (e.g. shell/stat at prio 10) never pull the
+ *     server thread down below the d2_gate priority tier.
+ *   - Memory pinned (mlockall) and post-attach capability sandbox.
+ *
  * Protocol:
  *   - 128 B TX : Verifies IEEE 802.3 CRC-32 and causal ToF (1 <= uwb_tof_ns <= 133).
- *                Updates internal 64 B omega_cascade_rep_t and returns previous reply.
+ *                Updates internal 64 B omega_cascade_rep_t (with ledger_len,
+ *                64-bit rolling WAL in head_hash[0..7], and 24-byte 0x00 tail
+ *                in head_hash[8..31]) and returns previous reply.
  *   -  64 B TX (all 0x00): Read-only MISO status poll returning fresh 64 B reply
  *                without mutating state or asserting error latch.
  *   - Any other length (e.g. 63 B underflow) or non-zero 64 B: sets fail-closed
@@ -15,6 +23,7 @@
  */
 
 #include "omega_cascade.h"
+#include "qnx_rt_cage.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,6 +34,7 @@
 #include <devctl.h>
 #include <errno.h>
 #include <hw/io-spi.h>
+#include <sched.h>
 #include <sys/dispatch.h>
 #include <sys/iofunc.h>
 #include <sys/resmgr.h>
@@ -35,14 +45,21 @@ static spi_cfg_t           g_spi_cfg = {
     .clock_rate = 1000000u
 };
 static omega_cascade_rep_t g_last_rep;
-static uint64_t            g_wn_chain = 0x0070464153455350ULL;
-static uint32_t            g_tx_count = 0u;
+static uint64_t            g_wn_chain  = 0x0070464153455350ULL;
+static uint64_t            g_wal_chain = 0x04115249534F5201ULL;
+static uint32_t            g_tx_count  = 0u;
 
 static bool is_all_zero(const uint8_t *buf, size_t n) {
     for (size_t i = 0; i < n; ++i) {
         if (buf[i] != 0u) return false;
     }
     return true;
+}
+
+static void store_u64_le(uint8_t dst[8], uint64_t v) {
+    for (size_t i = 0; i < 8u; ++i) {
+        dst[i] = (uint8_t)((v >> (i * 8u)) & 0xFFu);
+    }
 }
 
 static int spi_sim_devctl(resmgr_context_t *ctp, io_devctl_t *msg, RESMGR_OCB_T *ocb) {
@@ -95,12 +112,15 @@ static int spi_sim_devctl(resmgr_context_t *ctp, io_devctl_t *msg, RESMGR_OCB_T 
             if (n != 128u) {
                 /* Reject truncated/invalid frames (e.g. 63 B underflow) fail-closed */
                 memset(&g_last_rep, 0, sizeof(g_last_rep));
-                g_last_rep.verdict     = OMEGA_CVERD_HOLD;
-                g_last_rep.stop_stage  = 1u;
-                g_last_rep.actuator_mv = 0u;
-                g_last_rep.omega_y_mv  = 5000u;
-                g_last_rep.flags_out   = OMEGA_OUT_CROWBAR_GND | OMEGA_OUT_WATCHDOG_LOCKED;
-                g_last_rep.reason_code = OMEGA_CRSN_SPI_IO_FAULT;
+                g_last_rep.verdict          = OMEGA_CVERD_HOLD;
+                g_last_rep.stop_stage       = 1u;
+                g_last_rep.actuator_mv      = 0u;
+                g_last_rep.omega_y_mv       = 5000u;
+                g_last_rep.flags_out        = OMEGA_OUT_CROWBAR_GND | OMEGA_OUT_WATCHDOG_LOCKED;
+                g_last_rep.reason_code      = OMEGA_CRSN_SPI_IO_FAULT;
+                g_last_rep.ledger_len       = g_tx_count;
+                g_last_rep.witness_chain_wn = g_wn_chain;
+                store_u64_le(g_last_rep.head_hash, g_wal_chain);
                 printf("[spi_fpga_sim] REJECT frame len=%u B (expected 128 B or 64 B 0x00) -> EIO\n",
                        (unsigned)n);
                 fflush(stdout);
@@ -115,7 +135,7 @@ static int spi_sim_devctl(resmgr_context_t *ctp, io_devctl_t *msg, RESMGR_OCB_T 
             memset(payload, 0, 128u);
             memcpy(payload, &prev_rep, 64u);
 
-            /* Evaluate incoming 128 B request */
+            /* Evaluate incoming 128 B request (head_hash[8..31] strictly 0x00) */
             omega_cascade_rep_t next_rep;
             memset(&next_rep, 0, sizeof(next_rep));
             next_rep.seq_id     = req.seq_id;
@@ -127,19 +147,31 @@ static int spi_sim_devctl(resmgr_context_t *ctp, io_devctl_t *msg, RESMGR_OCB_T 
                 next_rep.actuator_mv      = 0u;
                 next_rep.flags_out        = OMEGA_OUT_CROWBAR_GND | OMEGA_OUT_WATCHDOG_LOCKED;
                 next_rep.reason_code      = OMEGA_CRSN_SPI_IO_FAULT;
+                next_rep.ledger_len       = g_tx_count;
                 next_rep.witness_chain_wn = g_wn_chain; /* Frozen on CRC error */
+                store_u64_le(next_rep.head_hash, g_wal_chain);
                 printf("[spi_fpga_sim] CRC-32 MISMATCH on seq=%u -> HOLD (0 mV)\n",
                        (unsigned)req.seq_id);
                 fflush(stdout);
             } else if (!omega_tof_causal_ok(req.uwb_tof_ns, req.flags)) {
+                g_tx_count++;
+                g_wal_chain = ((g_wal_chain << 7) | (g_wal_chain >> 57)) ^
+                              (uint64_t)req.seq_id ^ (uint64_t)OMEGA_CVERD_HOLD;
                 next_rep.verdict          = OMEGA_CVERD_HOLD;
                 next_rep.stop_stage       = 1u;
                 next_rep.actuator_mv      = 0u;
                 next_rep.flags_out        = OMEGA_OUT_CROWBAR_GND;
                 next_rep.reason_code      = OMEGA_CRSN_TOF_CAUSALITY;
+                next_rep.ledger_len       = g_tx_count;
                 next_rep.witness_chain_wn = g_wn_chain;
+                store_u64_le(next_rep.head_hash, g_wal_chain);
             } else {
-                g_wn_chain = ((g_wn_chain << 7) | (g_wn_chain >> 57)) ^ (uint64_t)req.seq_id ^ 0xA5A5u;
+                g_tx_count++;
+                g_wn_chain  = ((g_wn_chain << 7) | (g_wn_chain >> 57)) ^
+                              (uint64_t)req.seq_id ^ 0xA5A5u;
+                g_wal_chain = ((g_wal_chain << 7) | (g_wal_chain >> 57)) ^
+                              (uint64_t)req.seq_id ^ (uint64_t)req.earned_merit_delta ^
+                              (uint64_t)OMEGA_CVERD_OPEN;
                 next_rep.verdict          = OMEGA_CVERD_OPEN;
                 next_rep.stop_stage       = 0u;
                 next_rep.admissible_count = 41u;
@@ -147,8 +179,9 @@ static int spi_sim_devctl(resmgr_context_t *ctp, io_devctl_t *msg, RESMGR_OCB_T 
                 next_rep.u_safe_out       = req.u_raw;
                 next_rep.flags_out        = OMEGA_OUT_RAIL_5V_EN | OMEGA_OUT_FSYNC_READY;
                 next_rep.reason_code      = OMEGA_CRSN_OK;
+                next_rep.ledger_len       = g_tx_count;
                 next_rep.witness_chain_wn = g_wn_chain;
-                g_tx_count++;
+                store_u64_le(next_rep.head_hash, g_wal_chain);
             }
 
             g_last_rep = next_rep;
@@ -165,14 +198,22 @@ static int spi_sim_devctl(resmgr_context_t *ctp, io_devctl_t *msg, RESMGR_OCB_T 
 int main(int argc, char **argv) {
     const char *dev_path = (argc > 1) ? argv[1] : "/dev/spi_fpga_sim";
 
-    memset(&g_last_rep, 0, sizeof(g_last_rep));
-    g_last_rep.verdict     = OMEGA_CVERD_HOLD;
-    g_last_rep.stop_stage  = 1u;
-    g_last_rep.actuator_mv = 0u;
-    g_last_rep.omega_y_mv  = 5000u;
+    struct sched_param sp;
+    memset(&sp, 0, sizeof(sp));
+    sp.sched_priority = OMEGA_PRIO_D2_GATE; /* Fixed prio 30 (_NTO_CHF_FIXED_PRIORITY) */
+    (void)sched_setscheduler(0, SCHED_FIFO, &sp);
 
-    dispatch_t *dpp = dispatch_create();
-    if (!dpp) { perror("dispatch_create"); return EXIT_FAILURE; }
+    memset(&g_last_rep, 0, sizeof(g_last_rep));
+    g_last_rep.verdict          = OMEGA_CVERD_HOLD;
+    g_last_rep.stop_stage       = 1u;
+    g_last_rep.actuator_mv      = 0u;
+    g_last_rep.omega_y_mv       = 5000u;
+    g_last_rep.flags_out        = OMEGA_OUT_CROWBAR_GND;
+    g_last_rep.witness_chain_wn = g_wn_chain;
+    store_u64_le(g_last_rep.head_hash, g_wal_chain);
+
+    dispatch_t *dpp = omega_qnx_create_fixed_dispatch();
+    if (!dpp) { return EXIT_FAILURE; }
 
     resmgr_attr_t rattr;
     memset(&rattr, 0, sizeof(rattr));
@@ -193,8 +234,12 @@ int main(int argc, char **argv) {
         return EXIT_FAILURE;
     }
 
-    printf("[spi_fpga_sim] Active at %s (DCMD_SPI_DATA_XCHNG 128B/64B) | pid=%d\n",
-           dev_path, (int)getpid());
+    if (omega_qnx_lock_memory_and_sandbox() != 0) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[spi_fpga_sim] Active at %s | SCHED_FIFO prio=%d (fixed+mlock+sandbox) | pid=%d\n",
+           dev_path, OMEGA_PRIO_D2_GATE, (int)getpid());
     fflush(stdout);
 
     dispatch_context_t *ctp = dispatch_context_alloc(dpp);

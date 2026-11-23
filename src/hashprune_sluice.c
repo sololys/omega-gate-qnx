@@ -570,3 +570,38 @@ omega_cascade_reason_t omega_l01_gov_step(
     gov->armed_seq_id = 0u;
     return OMEGA_CRSN_L01_RESET_OK;
 }
+
+bool omega_cascade_verify_hw_cosign(
+    const omega_cascade_req_t *req,
+    const omega_cascade_rep_t *hw_rep
+) {
+    if (!req || !hw_rep) return false;
+    if (hw_rep->seq_id != req->seq_id) return false;
+    if (hw_rep->verdict != OMEGA_CVERD_OPEN && hw_rep->verdict != OMEGA_CVERD_CONTINUOUS_PASS) {
+        return false;
+    }
+    if (hw_rep->stop_stage != 0u) return false;
+    if (hw_rep->actuator_mv != 5000u) return false;
+    if (hw_rep->omega_y_mv != 5000u) return false;
+    if (hw_rep->reason_code != 0u) return false;
+
+    /* Electrical exclusivity: RAIL_5V_EN must be 1 while all brake/fault flags are 0 */
+    if ((hw_rep->flags_out & OMEGA_OUT_RAIL_5V_EN) == 0u) return false;
+    const uint8_t forbidden_mask = (uint8_t)(
+        OMEGA_OUT_CROWBAR_GND |
+        OMEGA_OUT_SNUBBER_DUMP |
+        OMEGA_OUT_TRAP_STROBE |
+        OMEGA_OUT_KILL_LATCHED |
+        OMEGA_OUT_WATCHDOG_LOCKED
+    );
+    if ((hw_rep->flags_out & forbidden_mask) != 0u) return false;
+
+    /* 24-byte zero tail guard on head_hash[8..31] (bytes 40..63) against stuck-high MISO */
+    uint8_t tail_or = 0u;
+    for (size_t i = 8u; i < 32u; ++i) {
+        tail_or |= hw_rep->head_hash[i];
+    }
+    if (tail_or != 0u) return false;
+
+    return true;
+}

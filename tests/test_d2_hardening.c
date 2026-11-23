@@ -6,6 +6,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -80,6 +81,71 @@ int main(void) {
           "L01_REARM_FOR_EXPIRY_TEST");
     CHECK(omega_l01_gov_step(&gov, 21u, true, t1 + 95000ULL * MS) == OMEGA_CRSN_L01_RESET_ARMED,
           "L01_EXPIRED_CONFIRMATION_WINDOW_REARMS");
+
+    /* 3. Electrical 64B MISO hardware co-signing contract (omega_cascade_verify_hw_cosign) */
+    omega_cascade_req_t req;
+    omega_cascade_rep_t rep;
+    memset(&req, 0, sizeof(req));
+    memset(&rep, 0, sizeof(rep));
+    req.seq_id           = 77u;
+    rep.seq_id           = 77u;
+    rep.verdict          = OMEGA_CVERD_OPEN;
+    rep.stop_stage       = 0u;
+    rep.admissible_count = 41u;
+    rep.flags_out        = OMEGA_OUT_RAIL_5V_EN | OMEGA_OUT_FSYNC_READY;
+    rep.actuator_mv      = 5000u;
+    rep.omega_y_mv       = 5000u;
+    rep.u_safe_out       = 1000;
+    rep.reason_code      = 0u;
+    rep.ledger_len       = 1u;
+    rep.head_hash[0]     = 0xA5u;
+    rep.head_hash[7]     = 0x5Au;
+
+    CHECK(omega_cascade_verify_hw_cosign(&req, &rep),
+          "MISO_VALID_OPEN_WITH_64B_WAL_AND_ZERO_TAIL_ACCEPTED");
+
+    {
+        omega_cascade_rep_t bad = rep;
+        bad.flags_out |= OMEGA_OUT_CROWBAR_GND;
+        CHECK(!omega_cascade_verify_hw_cosign(&req, &bad),
+              "MISO_CONTRADICTORY_5V_AND_CROWBAR_REJECTED");
+    }
+    {
+        omega_cascade_rep_t bad = rep;
+        bad.flags_out &= (uint8_t)~OMEGA_OUT_RAIL_5V_EN;
+        CHECK(!omega_cascade_verify_hw_cosign(&req, &bad),
+              "MISO_MISSING_RAIL_5V_EN_REJECTED");
+    }
+    {
+        omega_cascade_rep_t bad = rep;
+        bad.omega_y_mv = 4999u;
+        CHECK(!omega_cascade_verify_hw_cosign(&req, &bad),
+              "MISO_OMEGA_Y_NOT_5000MV_REJECTED");
+    }
+    {
+        omega_cascade_rep_t bad = rep;
+        bad.stop_stage = 1u;
+        CHECK(!omega_cascade_verify_hw_cosign(&req, &bad),
+              "MISO_NONZERO_STOP_STAGE_REJECTED");
+    }
+    {
+        omega_cascade_rep_t bad = rep;
+        bad.reason_code = 1u;
+        CHECK(!omega_cascade_verify_hw_cosign(&req, &bad),
+              "MISO_NONZERO_REASON_CODE_REJECTED");
+    }
+    {
+        omega_cascade_rep_t bad = rep;
+        bad.head_hash[31] = 0xFFu;
+        CHECK(!omega_cascade_verify_hw_cosign(&req, &bad),
+              "MISO_STUCK_HIGH_ZERO_TAIL_REJECTED");
+    }
+    {
+        omega_cascade_rep_t bad = rep;
+        bad.seq_id = 76u;
+        CHECK(!omega_cascade_verify_hw_cosign(&req, &bad),
+              "MISO_STALE_SEQ_ID_MISMATCH_REJECTED");
+    }
 
     printf("=== D2 HARDENING SUMMARY: %d PASS, %d FAIL ===\n", g_pass, g_fail);
     return (g_fail == 0) ? EXIT_SUCCESS : EXIT_FAILURE;

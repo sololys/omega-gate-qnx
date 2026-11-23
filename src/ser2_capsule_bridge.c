@@ -8,6 +8,7 @@
  */
 
 #include "omega_capsule205b.h"
+#include "qnx_rt_cage.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,8 +19,11 @@
 #include <devctl.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <sched.h>
 #include <termios.h>
 #include <unistd.h>
+
+#define OMEGA_PRIO_SER2_BRIDGE 18
 
 static int read_exact(int fd, uint8_t *buf, size_t n) {
     size_t got = 0;
@@ -84,7 +88,19 @@ int main(int argc, char **argv) {
         return EXIT_FAILURE;
     }
 
-    printf("[ser2_bridge] Ready on %s -> %s (288B in / 64B out)\n", ser_path, OMEGA_DEV_D0_TRAP);
+    struct sched_param sp;
+    memset(&sp, 0, sizeof(sp));
+    sp.sched_priority = OMEGA_PRIO_SER2_BRIDGE;
+    (void)sched_setscheduler(0, SCHED_FIFO, &sp);
+
+    if (omega_qnx_lock_memory_and_sandbox() != 0) {
+        close(d0_fd);
+        close(ser_fd);
+        return EXIT_FAILURE;
+    }
+
+    printf("[ser2_bridge] Ready on %s -> %s | SCHED_FIFO prio=%d (mlock+sandbox) | 288B in / 64B out\n",
+           ser_path, OMEGA_DEV_D0_TRAP, OMEGA_PRIO_SER2_BRIDGE);
     fflush(stdout);
 
     int count = 0;

@@ -7,6 +7,7 @@
 
 #include "omega_cascade.h"
 #include "omega_gate.h"
+#include "qnx_rt_cage.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -57,7 +58,11 @@ int main(void) {
     name_attach_t *attach = name_attach(NULL, OMEGA_CASCADE_MIRROR_NAME, 0);
     if (!attach) { perror("name_attach"); return EXIT_FAILURE; }
 
-    printf("[trap_mirror_daemon] Active on '%s' | SCHED_FIFO prio=%d | 0.00 V DC | pid=%d\n",
+    if (omega_qnx_lock_memory_and_sandbox() != 0) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[trap_mirror_daemon] Active on '%s' | SCHED_FIFO prio=%d (mlock+sandbox) | 0.00 V DC | pid=%d\n",
            OMEGA_CASCADE_MIRROR_NAME, OMEGA_PRIO_TRAP_MIRROR, (int)getpid());
     fflush(stdout);
 

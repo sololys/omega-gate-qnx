@@ -11,6 +11,7 @@
 #include "omega_cascade.h"
 #include "omega_capsule205b.h"
 #include "omega_gate.h"
+#include "qnx_rt_cage.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -157,8 +158,8 @@ int main(void) {
     pthread_t hb_thr;
     (void)pthread_create(&hb_thr, NULL, d0_heartbeat_thread, NULL);
 
-    dispatch_t *dpp = dispatch_create();
-    if (!dpp) { perror("dispatch_create"); return EXIT_FAILURE; }
+    dispatch_t *dpp = omega_qnx_create_fixed_dispatch();
+    if (!dpp) { return EXIT_FAILURE; }
 
     resmgr_attr_t rattr;
     memset(&rattr, 0, sizeof(rattr));
@@ -179,7 +180,11 @@ int main(void) {
         return EXIT_FAILURE;
     }
 
-    printf("[d0_trap] Active at %s | SCHED_FIFO prio=%d | mirror_coid=%d | pid=%d\n",
+    if (omega_qnx_lock_memory_and_sandbox() != 0) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[d0_trap] Active at %s | SCHED_FIFO prio=%d (fixed+mlock+sandbox) | mirror_coid=%d | pid=%d\n",
            OMEGA_DEV_D0_TRAP, OMEGA_PRIO_D0_TRAP, g_mirror_coid, (int)getpid());
     fflush(stdout);
 

@@ -51,6 +51,8 @@ sleep 1
 /data/omega_gate/d0_trap_resmgr &
 sleep 1
 ls -la /dev/spi_fpga_sim /dev/d0_trap /dev/d1_guestroom /dev/d2_gate
+echo "=== [PIDIN PRIORITIES BEFORE CASCADE] ==="
+pidin -F "%a %b %p %n" | grep -E "d0_trap|d1_guestroom|d2_gate|spi_fpga_sim|cascade_mirror" || pidin | grep -E "d0_trap|d1_guestroom|d2_gate|spi_fpga_sim|cascade_mirror" || true
 /data/omega_gate/cascade_driver $D1_PID $SPI_PID /dev/spi_fpga_sim
 sleep 1
 shutdown -f
@@ -64,7 +66,24 @@ timeout 45 qemu-system-x86_64 \
     -drive "file=$VM_DIR/output/disk-qemu.vmdk,if=ide,id=drv0" \
     -object rng-random,filename=/dev/urandom,id=rng0 \
     -device virtio-rng-pci,rng=rng0 \
-    -display none -serial "file:$SERIAL_LOG" || true
+    -display none -no-reboot -serial "file:$SERIAL_LOG" || true
 
 echo "=== QNX 8.0 SERIAL LOG ($SERIAL_LOG) ==="
 tail -n 60 "$SERIAL_LOG"
+
+echo "=== [HOST ASSERT] VERIFYING FIXED QNX RT PRIORITY LADDER (15f/20f/25f/30f/30f) ==="
+PIDIN_CLEAN="$(tr -d '\r' < "$SERIAL_LOG")"
+check_prio() {
+    local expected_prio="$1"
+    local proc_name="$2"
+    if ! printf '%s\n' "$PIDIN_CLEAN" | grep -Eq "^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]+${expected_prio}[[:space:]]+.*${proc_name}"; then
+        echo "[FAIL] Missing expected priority ${expected_prio} for ${proc_name} in pidin output!" >&2
+        exit 1
+    fi
+    echo "  [PASS] ${proc_name} locked at ${expected_prio}"
+}
+check_prio "15f" "cascade_mirror_daemon"
+check_prio "20f" "d0_trap_resmgr"
+check_prio "25f" "d1_guestroom_resmgr"
+check_prio "30f" "d2_gate_resmgr"
+check_prio "30f" "spi_fpga_sim_resmgr"

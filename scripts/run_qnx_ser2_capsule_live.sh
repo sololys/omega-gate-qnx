@@ -55,7 +55,7 @@ qemu-system-x86_64 \
     -drive "file=$VM_DIR/output/disk-qemu.vmdk,if=ide,id=drv0" \
     -object rng-random,filename=/dev/urandom,id=rng0 \
     -device virtio-rng-pci,rng=rng0 \
-    -display none \
+    -display none -no-reboot \
     -serial "file:$SERIAL_LOG" \
     -serial "unix:$SER2_SOCK,server,nowait" &
 QEMU_PID=$!

@@ -323,8 +323,12 @@ uint32_t omega_crc32_ieee(const void *data, size_t len);
 void omega_cascade_seal_req(omega_cascade_req_t *req);
 bool omega_cascade_verify_req(const omega_cascade_req_t *req);
 
-/* Causal ToF gate & Two-Phase L01 Reset Governor (0-float, CLOCK_MONOTONIC) */
+/* Causal ToF gate, Electrical MISO Co-Sign & Two-Phase L01 Reset Governor (0-float) */
 bool omega_tof_causal_ok(uint16_t uwb_tof_ns, uint16_t flags);
+bool omega_cascade_verify_hw_cosign(
+    const omega_cascade_req_t *req,
+    const omega_cascade_rep_t *hw_rep
+);
 
 typedef struct {
     bool     armed;

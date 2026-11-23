@@ -15,6 +15,7 @@
 
 #include "omega_cascade.h"
 #include "omega_gate.h"
+#include "qnx_rt_cage.h"
 #include "sha256_zero_dep.h"
 
 #include <stdio.h>
@@ -351,10 +352,7 @@ static int d2_io_devctl(resmgr_context_t *ctp, io_devctl_t *msg, RESMGR_OCB_T *o
                 omega_cascade_rep_t hw_rep;
                 memset(&hw_rep, 0, sizeof(hw_rep));
                 bool xfer_ok = d2_spi_cosign(&req, &hw_rep);
-                bool hw_open = xfer_ok &&
-                               (hw_rep.seq_id == req.seq_id) &&
-                               (hw_rep.actuator_mv == 5000u) &&
-                               (hw_rep.verdict == OMEGA_CVERD_OPEN || hw_rep.verdict == OMEGA_CVERD_CONTINUOUS_PASS);
+                bool hw_open = xfer_ok && omega_cascade_verify_hw_cosign(&req, &hw_rep);
                 if (!hw_open) {
                     if (xfer_ok && hw_rep.verdict == OMEGA_CVERD_KILL) {
                         g_kill_latched = true;
@@ -466,8 +464,8 @@ int main(int argc, char **argv) {
         }
     }
 
-    dispatch_t *dpp = dispatch_create();
-    if (!dpp) { perror("dispatch_create"); return EXIT_FAILURE; }
+    dispatch_t *dpp = omega_qnx_create_fixed_dispatch();
+    if (!dpp) { return EXIT_FAILURE; }
 
     resmgr_attr_t rattr;
     memset(&rattr, 0, sizeof(rattr));
@@ -521,7 +519,11 @@ int main(int argc, char **argv) {
         return EXIT_FAILURE;
     }
 
-    printf("[d2_gate] Active at %s | SCHED_FIFO prio=%d | wdg=%ums/%ums | l01_cd=%ums | spi=%s | pid=%d\n",
+    if (omega_qnx_lock_memory_and_sandbox() != 0) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[d2_gate] Active at %s | SCHED_FIFO prio=%d (fixed+mlock+sandbox) | wdg=%ums/%ums | l01_cd=%ums | spi=%s | pid=%d\n",
            OMEGA_DEV_D2_GATE, OMEGA_PRIO_D2_GATE, OMEGA_WDG_TICK_MS, OMEGA_WDG_TIMEOUT_MS,
            (unsigned)cooldown_ms, g_spi_dev_path ? g_spi_dev_path : "none", (int)getpid());
     fflush(stdout);

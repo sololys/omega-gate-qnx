@@ -7,6 +7,7 @@
  */
 
 #include "omega_cascade.h"
+#include "qnx_rt_cage.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -118,8 +119,8 @@ int main(void) {
     pthread_t hb_thr;
     (void)pthread_create(&hb_thr, NULL, d1_heartbeat_thread, NULL);
 
-    dispatch_t *dpp = dispatch_create();
-    if (!dpp) { perror("dispatch_create"); return EXIT_FAILURE; }
+    dispatch_t *dpp = omega_qnx_create_fixed_dispatch();
+    if (!dpp) { return EXIT_FAILURE; }
 
     resmgr_attr_t rattr;
     memset(&rattr, 0, sizeof(rattr));
@@ -140,7 +141,11 @@ int main(void) {
         return EXIT_FAILURE;
     }
 
-    printf("[d1_guestroom] Active at %s | SCHED_FIFO prio=%d | fsync=400 | pid=%d\n",
+    if (omega_qnx_lock_memory_and_sandbox() != 0) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[d1_guestroom] Active at %s | SCHED_FIFO prio=%d (fixed+mlock+sandbox) | fsync=400 | pid=%d\n",
            OMEGA_DEV_D1_GUESTROOM, OMEGA_PRIO_D1_GUESTROOM, (int)getpid());
     fflush(stdout);
 

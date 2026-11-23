@@ -454,6 +454,10 @@ const char *omega_cascade_reason_name(uint32_t r) {
         case OMEGA_CRSN_WATCHDOG_LOCKED:    return "WATCHDOG_LOCKED";
         case OMEGA_CRSN_L01_RESET_OK:       return "L01_RESET_OK";
         case OMEGA_CRSN_L01_RESET_INVALID:  return "L01_RESET_INVALID";
+        case OMEGA_CRSN_TOF_CAUSALITY:      return "TOF_CAUSALITY";
+        case OMEGA_CRSN_L01_RESET_ARMED:    return "L01_RESET_ARMED";
+        case OMEGA_CRSN_L01_RESET_COOLDOWN: return "L01_RESET_COOLDOWN";
+        case OMEGA_CRSN_SPI_IO_FAULT:       return "SPI_IO_FAULT";
         default:                            return "UNKNOWN";
     }
 }
@@ -491,4 +495,78 @@ void omega_cascade_seal_req(omega_cascade_req_t *req) {
 bool omega_cascade_verify_req(const omega_cascade_req_t *req) {
     uint32_t expected = omega_crc32_ieee(req, offsetof(omega_cascade_req_t, crc32));
     return req->crc32 == expected;
+}
+
+bool omega_tof_causal_ok(uint16_t uwb_tof_ns, uint16_t flags) {
+    bool uwb_active  = (flags & OMEGA_FLAG_UWB_LINK_ACTIVE) != 0;
+    bool kpod_sealed = (flags & OMEGA_FLAG_KPOD_SEALED) != 0;
+
+    /* Active UWB link reporting 0 ns is a non-causal (spacelike) breach: never masked */
+    if (uwb_active && uwb_tof_ns < OMEGA_TOF_MIN_NS) {
+        return false;
+    }
+    if (uwb_tof_ns >= OMEGA_TOF_MIN_NS && uwb_tof_ns <= OMEGA_TOF_MAX_NS) {
+        return true;
+    }
+    /* Physical courier bypass only when UWB link is inactive */
+    if (!uwb_active && kpod_sealed) {
+        return true;
+    }
+    return false;
+}
+
+void omega_l01_gov_init(omega_l01_reset_gov_t *gov, uint32_t cooldown_ms, uint32_t expiry_ms) {
+    if (!gov) return;
+    gov->armed        = false;
+    gov->armed_at_ns  = 0ULL;
+    gov->armed_seq_id = 0u;
+    gov->cooldown_ns  = (uint64_t)cooldown_ms * 1000000ULL;
+    gov->expiry_ns    = (uint64_t)expiry_ms * 1000000ULL;
+}
+
+omega_cascade_reason_t omega_l01_gov_step(
+    omega_l01_reset_gov_t *gov,
+    uint32_t seq_id,
+    bool key_valid,
+    uint64_t now_ns
+) {
+    if (!gov || !key_valid) {
+        return OMEGA_CRSN_L01_RESET_INVALID;
+    }
+
+    if (!gov->armed) {
+        gov->armed        = true;
+        gov->armed_at_ns  = now_ns;
+        gov->armed_seq_id = seq_id;
+        return OMEGA_CRSN_L01_RESET_ARMED;
+    }
+
+    /* Phase 2 requires strictly increasing seq_id */
+    if (seq_id <= gov->armed_seq_id) {
+        gov->armed_at_ns  = now_ns;
+        gov->armed_seq_id = seq_id;
+        return OMEGA_CRSN_L01_RESET_COOLDOWN;
+    }
+
+    uint64_t elapsed_ns = (now_ns >= gov->armed_at_ns) ? (now_ns - gov->armed_at_ns) : 0ULL;
+
+    /* Impatient attempt before cooldown expires: reject and restart cooldown timer */
+    if (elapsed_ns < gov->cooldown_ns) {
+        gov->armed_at_ns  = now_ns;
+        gov->armed_seq_id = seq_id;
+        return OMEGA_CRSN_L01_RESET_COOLDOWN;
+    }
+
+    /* Confirmation window expired: re-arm from Phase 1 */
+    if (gov->expiry_ns > 0ULL && elapsed_ns > (gov->cooldown_ns + gov->expiry_ns)) {
+        gov->armed_at_ns  = now_ns;
+        gov->armed_seq_id = seq_id;
+        return OMEGA_CRSN_L01_RESET_ARMED;
+    }
+
+    /* Phase 2 confirmed within valid window -> release latch */
+    gov->armed        = false;
+    gov->armed_at_ns  = 0ULL;
+    gov->armed_seq_id = 0u;
+    return OMEGA_CRSN_L01_RESET_OK;
 }

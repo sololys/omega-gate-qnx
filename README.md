@@ -86,6 +86,15 @@ nrw-rw-rw-  1 root root 0 2026-11-22 18:51 /dev/omega_gate
 
 ---
 
+## Hardened `/dev/d2_gate` Controls & QNX SPI Co-Signing
+
+- **Causal UWB Time-of-Flight gate:** Enforces `1 <= uwb_tof_ns <= 133` ns (`OMEGA_TOF_MIN_NS` .. `OMEGA_TOF_MAX_NS`) prior to any `OPEN (5000 mV)` authorization. Non-causal `0 ns` or out-of-range `> 133 ns` frames clamp the actuator strictly to `0.00 V DC` (`HOLD`, `TOF_CAUSALITY`) while keeping the orthogonal existence rail `omega_y_mv` at `5000 mV`.
+- **Two-phase L01 physical key reset (`--l01-cooldown-ms`, `--l01-expiry-ms`):** Phase 1 arms the reset (`L01_RESET_ARMED`, `0 mV`) on a `CLOCK_MONOTONIC` timer (default `30 000 ms`). Any premature Phase 2 attempt before cooldown expiry is rejected (`L01_RESET_COOLDOWN`) and restarts the timer. Only a strictly monotonic Phase 2 confirmation within the confirmation window releases the latch to `HOLD (0 mV, L01_RESET_OK)`.
+- **Optional QNX `<hw/io-spi.h>` hardware co-signing (`--spi-dev`):** Uses standard QNX `devctl(DCMD_SPI_DATA_XCHNG)` with zero extra client libraries — transmitting the sealed `128 B` `omega_cascade_req_t` followed by a read-only `64 B` `0x00` MISO readback for the current-frame `omega_cascade_rep_t`. Hardware may downgrade `OPEN -> HOLD/KILL` (`SPI_IO_FAULT`, `0 mV`), never upgrade `HOLD/KILL -> OPEN`.
+- **QNX SPI slave simulator (`spi_fpga_sim_resmgr`):** Registers `/dev/spi_fpga_sim` for end-to-end QEMU `DCMD_SPI_DATA_XCHNG` verification (`128 B` IEEE CRC-32 + causal ToF check, `64 B` `0x00` readback, and fail-closed `EIO` rejection on `63 B` underflow).
+
+---
+
 ## Epistemic Demarcation
 
 - **Verified locally (`L1/L2`):** Zero-float C11 state machine, FIPS 180-4 SHA-256 witness chain, QNX 8.0 IPC/Resource Manager boundaries, and SystemVerilog IEEE 1800-2012 RTL (`iverilog -Wall` 0 warnings, `yosys` clean).

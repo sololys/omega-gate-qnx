@@ -36,6 +36,10 @@ test: $(BUILD_DIR)
 	./$(BUILD_DIR)/test_hashprune_sluice
 	$(CC) $(CFLAGS) -o $(BUILD_DIR)/test_capsule205b_bridge $(CAP205_SRCS) tests/test_capsule205b_bridge.c
 	./$(BUILD_DIR)/test_capsule205b_bridge
+	$(CC) $(CFLAGS) -o $(BUILD_DIR)/test_d2_hardening $(SLUICE_SRCS) tests/test_d2_hardening.c
+	./$(BUILD_DIR)/test_d2_hardening
+	$(CC) $(CFLAGS) -o $(BUILD_DIR)/d2_gate_resmgr_host $(SLUICE_SRCS) src/d2_gate_resmgr.c
+	$(CC) $(CFLAGS) -o $(BUILD_DIR)/spi_fpga_sim_resmgr_host $(SLUICE_SRCS) src/spi_fpga_sim_resmgr.c
 
 demo: $(BUILD_DIR)
 	$(CC) $(CFLAGS) -o $(BUILD_DIR)/omega_gate_resmgr $(CORE_SRCS) src/omega_gate_resmgr.c
@@ -58,6 +62,8 @@ qnx:
 	$(QCC) $(QCCFLAGS) -o $(BUILD_DIR)/qnx_$(ARCH)/trap_mirror_daemon src/trap_mirror_daemon.c
 	$(QCC) $(QCCFLAGS) -o $(BUILD_DIR)/qnx_$(ARCH)/test_hashprune_sluice $(SLUICE_SRCS) tests/test_hashprune_sluice.c
 	$(QCC) $(QCCFLAGS) -o $(BUILD_DIR)/qnx_$(ARCH)/test_capsule205b_bridge $(CAP205_SRCS) tests/test_capsule205b_bridge.c
+	$(QCC) $(QCCFLAGS) -o $(BUILD_DIR)/qnx_$(ARCH)/test_d2_hardening $(SLUICE_SRCS) tests/test_d2_hardening.c
+	$(QCC) $(QCCFLAGS) -o $(BUILD_DIR)/qnx_$(ARCH)/spi_fpga_sim_resmgr $(SLUICE_SRCS) src/spi_fpga_sim_resmgr.c
 	$(QCC) $(QCCFLAGS) -o $(BUILD_DIR)/qnx_$(ARCH)/d2_gate_resmgr $(SLUICE_SRCS) src/d2_gate_resmgr.c
 	$(QCC) $(QCCFLAGS) -o $(BUILD_DIR)/qnx_$(ARCH)/d1_guestroom_resmgr $(SLUICE_SRCS) src/d1_guestroom_resmgr.c
 	$(QCC) $(QCCFLAGS) -o $(BUILD_DIR)/qnx_$(ARCH)/d0_trap_resmgr $(CAP205_SRCS) src/d0_trap_resmgr.c

@@ -27,10 +27,16 @@
 #define OMEGA_DEV_D2_GATE         "/dev/d2_gate"
 #define OMEGA_CASCADE_MIRROR_NAME "omega_cascade_mirror"
 
-/* Watchdog timing (ms) */
-#define OMEGA_WDG_TICK_MS         100u
-#define OMEGA_WDG_HB_INTERVAL_MS  50u
-#define OMEGA_WDG_TIMEOUT_MS      250u
+/* Watchdog & L01 cooldown timing (ms) */
+#define OMEGA_WDG_TICK_MS              100u
+#define OMEGA_WDG_HB_INTERVAL_MS       50u
+#define OMEGA_WDG_TIMEOUT_MS           250u
+#define OMEGA_L01_DEFAULT_COOLDOWN_MS  30000u
+#define OMEGA_L01_DEFAULT_EXPIRY_MS    60000u
+
+/* Causal UWB Time-of-Flight bounds (ns): 1 ns <= tof <= 133 ns (~20 m) */
+#define OMEGA_TOF_MIN_NS               1u
+#define OMEGA_TOF_MAX_NS               133u
 
 /* Peer IDs registered in d2_gate extended OCB */
 typedef enum {
@@ -98,7 +104,11 @@ typedef enum {
     OMEGA_CRSN_WATCHDOG_TIMEOUT    = 15,
     OMEGA_CRSN_WATCHDOG_LOCKED     = 16,
     OMEGA_CRSN_L01_RESET_OK        = 17,
-    OMEGA_CRSN_L01_RESET_INVALID   = 18
+    OMEGA_CRSN_L01_RESET_INVALID   = 18,
+    OMEGA_CRSN_TOF_CAUSALITY       = 19,
+    OMEGA_CRSN_L01_RESET_ARMED     = 20,
+    OMEGA_CRSN_L01_RESET_COOLDOWN  = 21,
+    OMEGA_CRSN_SPI_IO_FAULT        = 22
 } omega_cascade_reason_t;
 
 /* 128 bytes exact (2 cache lines) — Request over MsgSend and SPI */
@@ -312,5 +322,24 @@ void omega_compute_l01_key_hash16(const char *token, uint8_t out16[16]);
 uint32_t omega_crc32_ieee(const void *data, size_t len);
 void omega_cascade_seal_req(omega_cascade_req_t *req);
 bool omega_cascade_verify_req(const omega_cascade_req_t *req);
+
+/* Causal ToF gate & Two-Phase L01 Reset Governor (0-float, CLOCK_MONOTONIC) */
+bool omega_tof_causal_ok(uint16_t uwb_tof_ns, uint16_t flags);
+
+typedef struct {
+    bool     armed;
+    uint64_t armed_at_ns;
+    uint32_t armed_seq_id;
+    uint64_t cooldown_ns;
+    uint64_t expiry_ns;
+} omega_l01_reset_gov_t;
+
+void omega_l01_gov_init(omega_l01_reset_gov_t *gov, uint32_t cooldown_ms, uint32_t expiry_ms);
+omega_cascade_reason_t omega_l01_gov_step(
+    omega_l01_reset_gov_t *gov,
+    uint32_t seq_id,
+    bool key_valid,
+    uint64_t now_ns
+);
 
 #endif /* OMEGA_CASCADE_H */

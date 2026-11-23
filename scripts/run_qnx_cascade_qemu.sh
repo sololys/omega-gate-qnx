@@ -21,6 +21,8 @@ fi
 cat > "$VM_DIR/local/snippets/data_files.custom" <<EOF
 [perms=0755]
 omega_gate/test_hashprune_sluice=$REPO_DIR/build/qnx_x86_64/test_hashprune_sluice
+omega_gate/test_d2_hardening=$REPO_DIR/build/qnx_x86_64/test_d2_hardening
+omega_gate/spi_fpga_sim_resmgr=$REPO_DIR/build/qnx_x86_64/spi_fpga_sim_resmgr
 omega_gate/d2_gate_resmgr=$REPO_DIR/build/qnx_x86_64/d2_gate_resmgr
 omega_gate/d1_guestroom_resmgr=$REPO_DIR/build/qnx_x86_64/d1_guestroom_resmgr
 omega_gate/d0_trap_resmgr=$REPO_DIR/build/qnx_x86_64/d0_trap_resmgr
@@ -30,12 +32,16 @@ EOF
 
 cat > "$VM_DIR/local/snippets/post_start.custom" <<'EOF'
 echo "================================================================="
-echo "OMEGAGATE-QNX 4-PROCESS CASCADE & KILL -9 WATCHDOG VERIFICATION"
+echo "OMEGAGATE-QNX 4-PROCESS CASCADE + DCMD_SPI_DATA_XCHNG + L01 2-PHASE"
 uname -a
 echo "================================================================="
 chmod +x /data/omega_gate/*
 /data/omega_gate/test_hashprune_sluice
-/data/omega_gate/d2_gate_resmgr &
+/data/omega_gate/test_d2_hardening
+/data/omega_gate/spi_fpga_sim_resmgr /dev/spi_fpga_sim &
+SPI_PID=$!
+sleep 1
+/data/omega_gate/d2_gate_resmgr --spi-dev /dev/spi_fpga_sim --l01-cooldown-ms 200 &
 sleep 1
 /data/omega_gate/cascade_mirror_daemon &
 sleep 1
@@ -44,8 +50,8 @@ D1_PID=$!
 sleep 1
 /data/omega_gate/d0_trap_resmgr &
 sleep 1
-ls -la /dev/d0_trap /dev/d1_guestroom /dev/d2_gate
-/data/omega_gate/cascade_driver $D1_PID
+ls -la /dev/spi_fpga_sim /dev/d0_trap /dev/d1_guestroom /dev/d2_gate
+/data/omega_gate/cascade_driver $D1_PID $SPI_PID /dev/spi_fpga_sim
 sleep 1
 shutdown -f
 EOF

@@ -142,10 +142,14 @@ typedef struct {
 typedef struct {
     bool                  global_kill_latched;
     uint32_t              trap_count;
+    uint32_t              trap_archived_count;
+    uint32_t              global_reset_epochs;
     uint32_t              trap_overflow_kills;
     uint32_t              oob_channel_kills;
     uint32_t              pulse_sent_count;
     uint16_t              last_trap_channel;
+    uint8_t               trap_epoch_sha256[32];
+    uint8_t               global_wal_head[32];
     omega_omg8_chan_ctx_t channels[OMEGA_OMG8_MAX_CHANNELS];
     omega_omg8_frame_t    trap_ring[OMEGA_OMG8_TRAP_RING_CAP];
 } omega_omg8_bank_t;
@@ -236,6 +240,13 @@ static inline void omega_omg8_chan_wal_advance(
     ch->ledger_len++;
 }
 
+static inline void omega_omg8_put_le32(uint8_t out[4], uint32_t val) {
+    out[0] = (uint8_t)(val & 0xFFu);
+    out[1] = (uint8_t)((val >> 8) & 0xFFu);
+    out[2] = (uint8_t)((val >> 16) & 0xFFu);
+    out[3] = (uint8_t)((val >> 24) & 0xFFu);
+}
+
 static inline bool omega_omg8_l01_reset(
     omega_omg8_bank_t *bank,
     uint16_t           channel_id,
@@ -245,11 +256,57 @@ static inline bool omega_omg8_l01_reset(
         return false;
     }
     if (channel_id == 0xFFFFu) {
-        bank->global_kill_latched = false;
-        bank->trap_count = 0u;
+        /* 1. Seal captured trap_ring forensic frames (0..trap_count) without erasing trap_ring memory */
+        uint32_t active_traps = bank->trap_count;
+        if (active_traps > OMEGA_OMG8_TRAP_RING_CAP) {
+            active_traps = OMEGA_OMG8_TRAP_RING_CAP;
+        }
+        sha256_ctx_t tctx;
+        sha256_init(&tctx);
+        if (active_traps > 0u) {
+            sha256_update(&tctx, (const uint8_t *)bank->trap_ring,
+                          (size_t)active_traps * sizeof(omega_omg8_frame_t));
+        }
+        sha256_final(&tctx, bank->trap_epoch_sha256);
+
+        /* 2. Advance bank-level append-only global_wal_head with epoch + forensic trap digest */
+        static const uint8_t kGlobalResetDomain[24] = "OMG8_GLOBAL_L01_RESET_V1";
+        uint8_t meta_le[16];
+        omega_omg8_put_le32(&meta_le[0],  bank->global_reset_epochs);
+        omega_omg8_put_le32(&meta_le[4],  active_traps);
+        omega_omg8_put_le32(&meta_le[8],  bank->trap_overflow_kills);
+        omega_omg8_put_le32(&meta_le[12], bank->oob_channel_kills);
+
+        sha256_ctx_t gctx;
+        sha256_init(&gctx);
+        sha256_update(&gctx, bank->global_wal_head, 32u);
+        sha256_update(&gctx, kGlobalResetDomain, sizeof(kGlobalResetDomain));
+        sha256_update(&gctx, meta_le, sizeof(meta_le));
+        sha256_update(&gctx, bank->trap_epoch_sha256, 32u);
+        sha256_final(&gctx, bank->global_wal_head);
+
+        bank->global_reset_epochs++;
+        bank->trap_archived_count += active_traps;
+        bank->global_kill_latched  = false;
+        bank->trap_count           = 0u;
+
+        /* 3. Append explicit L01 global-reset WAL record across all channels (preserving nonces) */
         for (uint32_t i = 0u; i < OMEGA_OMG8_MAX_CHANNELS; ++i) {
-            bank->channels[i].kill_latched = false;
-            bank->channels[i].trap_latched = false;
+            omega_omg8_chan_ctx_t *ch = &bank->channels[i];
+            ch->kill_latched = false;
+            ch->trap_latched = false;
+
+            omega_omg8_frame_t rst_rec;
+            memset(&rst_rec, 0, sizeof(rst_rec));
+            rst_rec.magic         = OMEGA_OMG8_MAGIC;
+            rst_rec.version       = OMEGA_OMG8_VERSION;
+            rst_rec.gate_state    = OMEGA_OMG8_STATE_HOLD;
+            rst_rec.seq_cycle     = ch->last_seq_cycle;
+            rst_rec.witness_nonce = ch->last_nonce;
+            rst_rec.channel_id    = (uint16_t)i;
+            memcpy(rst_rec.l01_witness_tag, bank->global_wal_head, 6u);
+            memcpy(rst_rec.prev_wal_trunc, ch->wal_head, 12u);
+            omega_omg8_chan_wal_advance(ch, &rst_rec);
         }
         return true;
     }
@@ -262,10 +319,12 @@ static inline bool omega_omg8_l01_reset(
 
     omega_omg8_frame_t rst_rec;
     memset(&rst_rec, 0, sizeof(rst_rec));
-    rst_rec.magic      = OMEGA_OMG8_MAGIC;
-    rst_rec.version    = OMEGA_OMG8_VERSION;
-    rst_rec.gate_state = OMEGA_OMG8_STATE_HOLD;
-    rst_rec.channel_id = channel_id;
+    rst_rec.magic         = OMEGA_OMG8_MAGIC;
+    rst_rec.version       = OMEGA_OMG8_VERSION;
+    rst_rec.gate_state    = OMEGA_OMG8_STATE_HOLD;
+    rst_rec.seq_cycle     = ch->last_seq_cycle;
+    rst_rec.witness_nonce = ch->last_nonce;
+    rst_rec.channel_id    = channel_id;
     memcpy(rst_rec.prev_wal_trunc, ch->wal_head, 12u);
     omega_omg8_chan_wal_advance(ch, &rst_rec);
     return true;

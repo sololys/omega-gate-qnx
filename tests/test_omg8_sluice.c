@@ -201,9 +201,57 @@ static int run_in_memory_suite(void) {
         assert(bank.global_kill_latched);
         assert(bank.trap_overflow_kills == 1u);
         assert(bank.trap_count == 1024u);
+
+        /* (5) Global 0xFFFFu L01 reset preserves forensic trap_ring & appends WAL reset records */
+        omega_omg8_frame_t saved_trap_first = bank.trap_ring[0];
+        omega_omg8_frame_t saved_trap_last  = bank.trap_ring[1023];
+        uint8_t  pre_wal_ch0[32];
+        uint8_t  pre_wal_ch1023[32];
+        uint8_t  zero_hash[32] = {0};
+        uint32_t pre_len_ch0    = bank.channels[0].ledger_len;
+        uint32_t pre_len_ch1023 = bank.channels[1023].ledger_len;
+        memcpy(pre_wal_ch0, bank.channels[0].wal_head, 32u);
+        memcpy(pre_wal_ch1023, bank.channels[1023].wal_head, 32u);
+
+        assert(!omega_omg8_l01_reset(&bank, 0xFFFFu, "WRONG_KEY"));
+        assert(bank.global_kill_latched);
+
+        assert(omega_omg8_l01_reset(&bank, 0xFFFFu, OMEGA_L01_KEY_TOKEN));
+        assert(!bank.global_kill_latched);
+        assert(bank.global_reset_epochs == 1u);
+        assert(bank.trap_archived_count == 1024u);
+        assert(bank.trap_count == 0u);
+        assert(memcmp(bank.trap_epoch_sha256, zero_hash, 32u) != 0);
+        assert(memcmp(bank.global_wal_head, zero_hash, 32u) != 0);
+
+        /* Forensic frames in trap_ring remain intact in RAM (never wiped on reset) */
+        assert(memcmp(&bank.trap_ring[0], &saved_trap_first, sizeof(saved_trap_first)) == 0);
+        assert(memcmp(&bank.trap_ring[1023], &saved_trap_last, sizeof(saved_trap_last)) == 0);
+
+        /* Explicit L01 reset WAL entry appended across channels without weakening nonce replay guard */
+        assert(bank.channels[0].ledger_len == pre_len_ch0 + 1u);
+        assert(bank.channels[1023].ledger_len == pre_len_ch1023 + 1u);
+        assert(memcmp(bank.channels[0].wal_head, pre_wal_ch0, 32u) != 0);
+        assert(memcmp(bank.channels[1023].wal_head, pre_wal_ch1023, 32u) != 0);
+        assert(!bank.channels[0].kill_latched);
+        assert(!bank.channels[1023].trap_latched);
+
+        omega_omg8_frame_t req_stale, rep_stale, req_fresh, rep_fresh;
+        bool trap_post = false;
+        build_valid_req(&req_stale, 1u, 1ULL, 101ULL /* replay <= consumed */, 0x03000000u, 0x01000000u,
+                        OMEGA_OMG8_BRU_OPEN | OMEGA_OMG8_MIRROR_OK_BIT);
+        omega_omg8_eval_frame(&bank, &req_stale, &rep_stale, &trap_post);
+        assert(rep_stale.gate_state == OMEGA_OMG8_STATE_KILL);
+        assert(rep_stale.err_flags == OMEGA_OMG8_ERR_NO_WITNESS);
+
+        build_valid_req(&req_fresh, 2u, 2ULL, 9502ULL, 0x03000000u, 0x01000000u,
+                        OMEGA_OMG8_BRU_OPEN | OMEGA_OMG8_MIRROR_OK_BIT);
+        omega_omg8_eval_frame(&bank, &req_fresh, &rep_fresh, &trap_post);
+        assert(!trap_post);
+        assert(rep_fresh.gate_state == OMEGA_OMG8_STATE_OPEN);
     }
 
-    printf("[PASS] test_omg8_sluice (in-memory): 64B v1.1 contract, 1000-ch isolation (%llu ns), replay KILL, TRAP no-return, 1024->1025 overflow KILL verified.\n",
+    printf("[PASS] test_omg8_sluice (in-memory): 64B v1.1 contract, 1000-ch isolation (%llu ns), replay KILL, TRAP no-return, 1024->1025 overflow KILL, append-only global L01 reset verified.\n",
            (unsigned long long)dt_mem_ns);
     return 0;
 }

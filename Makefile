@@ -5,7 +5,7 @@
 #   make demo                   -> Host C11 planner demo
 #   make rtl                    -> SystemVerilog RTL cross-verification (iverilog + yosys)
 #   make verify                 -> Full C11 + RTL verification gate
-#   make qnx ARCH=x86_64        -> Cross-compile 3 QNX 8.0 binaries via qcc (QEMU)
+#   make qnx ARCH=x86_64        -> Cross-compile 15 QNX 8.0 binaries via qcc (QEMU)
 #   make qnx ARCH=aarch64le     -> Cross-compile for Raspberry Pi 4 / QNX 8.0 aarch64
 # ============================================================================
 

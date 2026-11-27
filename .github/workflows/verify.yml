@@ -1,0 +1,38 @@
+name: OmegaGate-QNX Zero-Float C11 & RTL Gate
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install GCC, Icarus Verilog, and Yosys
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc iverilog yosys
+
+      - name: Run full host C11 zero-float tests, demo, and RTL/Yosys synthesis gate
+        run: make verify
+
+      - name: Verify DCO 1.1 sign-off and zero-float diff gate
+        if: github.event_name == 'push'
+        run: ./scripts/check_dco_and_zero_float.sh HEAD~1 HEAD

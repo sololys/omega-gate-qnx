@@ -54,7 +54,7 @@ demo: $(BUILD_DIR)
 
 rtl: $(BUILD_DIR)
 	iverilog -g2012 -Wall -o $(BUILD_DIR)/tb_robot_trap_gate.vvp rtl/robot_trap_gate.sv rtl/tb_robot_trap_gate.sv
-	vvp $(BUILD_DIR)/tb_robot_trap_gate.vvp
+	vvp -N $(BUILD_DIR)/tb_robot_trap_gate.vvp
 	sed -E '/^[[:space:]]*(timeunit|timeprecision)[[:space:]]/d' rtl/robot_trap_gate.sv > $(BUILD_DIR)/robot_trap_gate_yosys.sv
 	yosys -q -p "read_verilog -sv $(BUILD_DIR)/robot_trap_gate_yosys.sv; hierarchy -check -top robot_trap_gate; proc; opt; check -assert; stat -top robot_trap_gate"
 	@echo "[PASS] RTL cross-verification (iverilog -g2012 -Wall + yosys check -assert) CLEAN"

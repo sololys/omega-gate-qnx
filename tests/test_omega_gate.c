@@ -103,6 +103,27 @@ int main(void) {
     g.ledger[0].voltage_mv = 1234u;
     check("T10B_LEDGER_TAMPER_CAUGHT", !omega_ledger_verify(&g));
 
+    /* T11: Wrong L01 key during active DEADTIME latches KILL, clamps crowbar, and cancels 5V pulse */
+    omega_gate_t g2;
+    omega_gate_init(&g2);
+    omega_cmd_t c11_arm = { 1, 500, OMEGA_STAGE_COMMITTED, OMEGA_STAGE_VIABILITY, 10000, 1000, 0, 0, 0, 0, 1, 15, 0, "" };
+    omega_gate_eval(&g2, &c11_arm, &r);
+    omega_cmd_t c11_bad = { 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, "RISOR_L01_PHYSICAL_KEY_EXTRA" };
+    omega_gate_eval(&g2, &c11_bad, &r);
+    uint8_t r5_a = 1u, cb_a = 0u, r5_b = 1u, cb_b = 0u;
+    omega_gate_tick_deadtime(&g2, &r5_a, &cb_a);
+    omega_gate_tick_deadtime(&g2, &r5_b, &cb_b);
+    check("T11_BAD_L01_CANCELS_DEADTIME_AND_LATCHES_KILL",
+          r.decision == OMEGA_DEC_KILL && r.kill_latched == 1u && r.crowbar_gnd == 1u &&
+          r5_a == 0u && cb_a == 1u && r5_b == 0u && cb_b == 1u);
+
+    /* T12: Saturated ledger (256 entries) rejects valid L01 reset fail-closed with DEC_KILL */
+    g2.ledger_len = OMEGA_MAX_LEDGER_ENTRIES;
+    omega_cmd_t c12_full = { 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, OMEGA_L01_KEY_TOKEN };
+    omega_gate_eval(&g2, &c12_full, &r);
+    check("T12_SATURATED_LEDGER_L01_FAILS_CLOSED_KILL",
+          r.decision == OMEGA_DEC_KILL && r.kill_latched == 1u && r.crowbar_gnd == 1u && r.rail_5v_en == 0u);
+
     printf("SUMMARY | omega_gate_qnx_c11 | PASS=%d FAIL=%d\n", g_pass, g_fail);
     return (g_fail == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
 }

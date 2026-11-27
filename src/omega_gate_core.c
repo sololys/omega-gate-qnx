@@ -123,9 +123,45 @@ void omega_gate_tick_deadtime(omega_gate_t *g, uint8_t *rail_5v_en, uint8_t *cro
     fill_rail_outputs(g, rail_5v_en, crowbar_gnd);
 }
 
+static bool ct_l01_token_eq32(const char *token) {
+    /* Constant-iteration 32-byte XOR accumulator; never reads past first NUL or byte 31 */
+    static const uint8_t k_expected[32] = {
+        'R','I','S','O','R','_','L','0','1','_','P','H','Y','S','I','C',
+        'A','L','_','K','E','Y', 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u
+    };
+    uint8_t acc = 0u;
+    uint8_t ended = 0u;
+    size_t pos = 0u;
+    size_t i;
+    if (token == NULL) {
+        return false;
+    }
+    for (i = 0u; i < 32u; ++i) {
+        uint8_t b = (ended == 0u) ? (uint8_t)token[pos] : 0u;
+        uint8_t is_zero = (b == 0u) ? 1u : 0u;
+        ended = (uint8_t)(ended | is_zero);
+        pos += (size_t)(1u - ended);
+        acc = (uint8_t)(acc | (b ^ k_expected[i]));
+    }
+    return (acc == 0u);
+}
+
 bool omega_gate_l01_reset(omega_gate_t *g, const char *token) {
-    if (token == NULL || strncmp(token, OMEGA_L01_KEY_TOKEN, 32u) != 0) {
+    if (g == NULL) {
+        return false;
+    }
+    if (!ct_l01_token_eq32(token)) {
+        g->kill_latched = true;
+        g->rail_state = OMEGA_RAIL_CLAMPED;
+        g->deadtime_cnt = 0u;
         ledger_append(g, g->last_seq_id, OMEGA_DEC_KILL, OMEGA_RSN_INVALID_KEY, 0u);
+        return false;
+    }
+    if (g->ledger_len >= OMEGA_MAX_LEDGER_ENTRIES) {
+        /* Fail-closed: saturated witness ledger cannot record reset -> stay latched KILL */
+        g->kill_latched = true;
+        g->rail_state = OMEGA_RAIL_CLAMPED;
+        g->deadtime_cnt = 0u;
         return false;
     }
     g->kill_latched = false;
@@ -133,7 +169,7 @@ bool omega_gate_l01_reset(omega_gate_t *g, const char *token) {
     g->rail_state = OMEGA_RAIL_CLAMPED;
     g->deadtime_cnt = 0u;
     ledger_append(g, g->last_seq_id, OMEGA_DEC_HOLD, OMEGA_RSN_L01_RESET, 0u);
-    return true;
+    return !g->kill_latched;
 }
 
 void omega_gate_eval(omega_gate_t *g, const omega_cmd_t *cmd, omega_reply_t *out) {
@@ -142,9 +178,11 @@ void omega_gate_eval(omega_gate_t *g, const omega_cmd_t *cmd, omega_reply_t *out
 
     /* Explicit L01 physical operator reset path (append-only) */
     if (cmd->is_l01_reset) {
+        bool key_ok = ct_l01_token_eq32(cmd->l01_token);
         bool ok = omega_gate_l01_reset(g, cmd->l01_token);
         out->decision = ok ? OMEGA_DEC_HOLD : OMEGA_DEC_KILL;
-        out->reason = ok ? OMEGA_RSN_L01_RESET : OMEGA_RSN_INVALID_KEY;
+        out->reason = ok ? OMEGA_RSN_L01_RESET
+                         : (key_ok ? OMEGA_RSN_KILL_LATCHED : OMEGA_RSN_INVALID_KEY);
         out->voltage_mv = 0u;
         out->kill_latched = g->kill_latched ? 1u : 0u;
         fill_rail_outputs(g, &out->rail_5v_en, &out->crowbar_gnd);

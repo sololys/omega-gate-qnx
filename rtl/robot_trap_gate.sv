@@ -86,7 +86,7 @@ module robot_trap_gate #(
         shortcut_breach        = (prev_stage_i >= 3'd4) || (stage_i != (prev_stage_i + 3'd1));
 
         // 2. Timing-loven (anti-replay og lyskjegle uten unsigned underflow)
-        replay_breach          = has_prev_ts_q && (timestamp_ns_i <= last_ts_q);
+        replay_breach          = (timestamp_ns_i == 32'd0) || (has_prev_ts_q && (timestamp_ns_i <= last_ts_q));
         lightcone_breach       = has_prev_ts_q && (timestamp_ns_i > last_ts_q) &&
                                  ((timestamp_ns_i - last_ts_q) > LIGHTCONE_MAX_NS);
 

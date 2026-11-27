@@ -167,7 +167,12 @@ module tb_robot_trap_gate;
         send_cmd(3'd4, 3'd3, 32'd2000, 32'd10_000, 32'd1_000, 8'd0, 1'b1, 16'd15);
         expect_eq("T6_REPLAY_KILL", gate_decision_o == DEC_KILL && kill_latched_o == 1'b1 && reason_code_o == 4'd5);
 
-        expect_eq("T7_ZERO_SHOOT_THROUGH", shoot_through_err == 0);
+        // T8: Initial timestamp_ns_i == 0 right after reset -> KILL (C11 parity)
+        do_reset();
+        send_cmd(3'd4, 3'd3, 32'd0, 32'd10_000, 32'd1_000, 8'd0, 1'b1, 16'd15);
+        expect_eq("T8_ZERO_TIMESTAMP_INITIAL_KILL", gate_decision_o == DEC_KILL && kill_latched_o == 1'b1 && crowbar_gnd_o == 1'b1 && reason_code_o == 4'd5);
+
+        expect_eq("T9_ZERO_SHOOT_THROUGH", shoot_through_err == 0);
 
         $display("SUMMARY | robot_trap_gate | PASS=%0d FAIL=%0d", pass_cnt, fail_cnt);
         if (fail_cnt != 0) $fatal(1, "tb_robot_trap_gate FAILED");

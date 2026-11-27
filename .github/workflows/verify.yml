@@ -15,10 +15,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Check out repository
+      - name: Check out full commit history
         uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -33,6 +33,18 @@ jobs:
       - name: Run full host C11 zero-float tests, demo, and RTL/Yosys synthesis gate
         run: make verify
 
-      - name: Verify DCO 1.1 sign-off and zero-float diff gate
-        if: github.event_name == 'push'
-        run: ./scripts/check_dco_and_zero_float.sh HEAD~1 HEAD
+      - name: Verify DCO 1.1 sign-off and zero-float diff gate across full commit span
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_SHA: ${{ github.sha }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            ./scripts/check_dco_and_zero_float.sh "$PR_BASE" "$PR_HEAD"
+          elif [ "$EVENT_NAME" = "push" ]; then
+            ./scripts/check_dco_and_zero_float.sh "$PUSH_BEFORE" "$PUSH_SHA"
+          else
+            ./scripts/check_dco_and_zero_float.sh HEAD~1 HEAD
+          fi
